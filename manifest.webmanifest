@@ -2,8 +2,8 @@
   "name": "FSP",
   "short_name": "FSP",
   "display": "standalone",
-  "background_color": "#f4f3ef",
-  "theme_color": "#f4f3ef",
+  "background_color": "#1f6b4a",
+  "theme_color": "#1f6b4a",
   "icons": [
     {
       "src": "icon-180.png",
