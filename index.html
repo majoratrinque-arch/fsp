@@ -155,8 +155,662 @@
 <div class="toast" id="toast"></div>
 
 <script>
+/**
+ * FSP Engine — pure logic, no Google APIs. (Tested in Node: see test/engine.test.js)
+ *
+ * Responsibilities:
+ *  - Parse the 3-day-cycle labels on each month tab ("1/4 - 1/7").
+ *  - Learn each income source's pay pattern (weekly / biweekly / semimonthly / monthly).
+ *  - Infer the exact pay day inside a cycle from that pattern, or ask.
+ *  - Ask "irregular or is payday changing?" when a paycheck lands off-schedule.
+ *  - Order everything chronologically (rows top→bottom), and ask which item you
+ *    standardize to come first when two things happen on the same row/day.
+ */
+var FSP = (function () {
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+  var WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  // ---------- date helpers (ISO 'YYYY-MM-DD' strings, UTC math) ----------
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function iso(y, m, d) {
+    var dt = new Date(Date.UTC(y, m, d));
+    return dt.getUTCFullYear() + '-' + pad(dt.getUTCMonth() + 1) + '-' + pad(dt.getUTCDate());
+  }
+  function toDate(s) { var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
+  function addDays(s, n) { var d = toDate(s); d.setUTCDate(d.getUTCDate() + n); return iso(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
+  function diffDays(a, b) { return Math.round((toDate(b) - toDate(a)) / 864e5); }
+  function weekday(s) { return toDate(s).getUTCDay(); }
+  function dom(s) { return toDate(s).getUTCDate(); }
+  function ym(s) { var d = toDate(s); return [d.getUTCFullYear(), d.getUTCMonth()]; }
+  function dim(y, m) { return new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); }
+  function fmt(s) { var d = toDate(s); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); }
+  function fmtLong(s) { return WEEKDAYS[weekday(s)].slice(0, 3) + ' ' + fmt(s); }
+  function ordinal(n) { var s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+  function daysBetween(a, b) { var out = []; for (var d = a; d <= b; d = addDays(d, 1)) out.push(d); return out; }
+
+  // ---------- cycle labels ----------
+  /**
+   * label: "1/4 - 1/7", "2/28", or an Excel/Sheets serial number.
+   * The month tab wins over the month written in the label (the template's
+   * September/December tabs still carry January labels).
+   */
+  function parseCycle(label, monthIdx, year) {
+    if (label === null || label === undefined || label === '') return null;
+    var warning = null;
+    if (typeof label === 'number') { // spreadsheet serial (epoch 1899-12-30)
+      var s = addDays('1899-12-30', Math.floor(label));
+      label = fmt(s);
+    }
+    label = String(label).trim();
+    var m = label.match(/(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?(?:\s*(?:-|–|—|to)\s*(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?)?/);
+    if (!m) return { error: 'Could not read cycle label "' + label + '"' };
+    var sm = +m[1], sd = +m[2], em = m[3] ? +m[3] : sm, ed = m[4] ? +m[4] : sd;
+    if (sm !== monthIdx + 1) {
+      warning = 'Label "' + label + '" is on the ' + MONTHS[monthIdx] + ' tab — treated as ' +
+        (monthIdx + 1) + '/' + sd + (m[3] ? ' - ' + (monthIdx + 1 + (em - sm)) + '/' + ed : '') + '.';
+    }
+    var start = iso(year, monthIdx, Math.min(sd, dim(year, monthIdx)));
+    var endMonth = monthIdx + (em - sm);
+    var endY = year + Math.floor(endMonth / 12), endM = ((endMonth % 12) + 12) % 12;
+    var end = iso(endY, endM, Math.min(ed, dim(endY, endM)));
+    if (end < start) end = start;
+    return { start: start, end: end, label: label, warning: warning };
+  }
+
+  function num(v) { if (v === '' || v === null || v === undefined) return 0; var n = Number(String(v).replace(/[$,\s]/g, '')); return isNaN(n) ? 0 : n; }
+  function str(v) { return v === null || v === undefined ? '' : String(v).trim(); }
+
+  /** rows: [{row, label, incomeSource, incomeAmount, expenseName, expenseAmount, category}] */
+  function buildCycles(sheetName, monthIdx, year, rows, warnings) {
+    var cycles = [], cur = null;
+    rows.forEach(function (r) {
+      var hasIncome = str(r.incomeSource) !== '' || num(r.incomeAmount) !== 0;
+      var hasExpense = str(r.expenseName) !== '' || num(r.expenseAmount) !== 0;
+      if (str(r.label) !== '' || typeof r.label === 'number') {
+        var c = parseCycle(r.label, monthIdx, year);
+        if (c && c.error) { warnings.push(sheetName + '!B' + r.row + ': ' + c.error); }
+        else if (c) {
+          if (c.warning) warnings.push(sheetName + '!B' + r.row + ': ' + c.warning);
+          cur = { sheet: sheetName, monthIdx: monthIdx, start: c.start, end: c.end, label: c.label, firstRow: r.row, rows: [] };
+          cycles.push(cur);
+        }
+      }
+      if (!hasIncome && !hasExpense) return;
+      if (!cur) { warnings.push(sheetName + '!' + r.row + ': entry above the first cycle label — skipped.'); return; }
+      cur.rows.push({
+        row: r.row,
+        income: hasIncome ? { source: str(r.incomeSource) || 'Unlabeled income', amount: num(r.incomeAmount) } : null,
+        expense: hasExpense ? { name: str(r.expenseName) || '(no description)', amount: num(r.expenseAmount), category: str(r.category) || 'Uncategorized' } : null
+      });
+    });
+    return cycles;
+  }
+
+  // ---------- pay patterns ----------
+  // Is `date` a valid payment date for nominal day-of-month N (weekend-shifted either way)?
+  function domMatch(date, N) {
+    var p = ym(date), nominal = iso(p[0], p[1], Math.min(N, dim(p[0], p[1])));
+    if (date === nominal) return 'exact';
+    var wd = weekday(nominal);
+    if (wd === 6) { if (date === addDays(nominal, -1)) return 'before'; if (date === addDays(nominal, 2)) return 'after'; }
+    if (wd === 0) { if (date === addDays(nominal, -2)) return 'before'; if (date === addDays(nominal, 1)) return 'after'; }
+    return null;
+  }
+  function domCandidates(dates) {
+    var set = {};
+    dates.forEach(function (d) { for (var k = -2; k <= 2; k++) { var n = dom(d) + k; if (n >= 1 && n <= 31) set[n] = 1; } if (dom(d) >= 26) set[31] = 1; });
+    return Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
+  }
+  // "Last day of the month" beats e.g. "the 30th" when both explain the data equally well.
+  function preferLastDay(dates, days, test) {
+    return days.map(function (N) {
+      if (N >= 28 && N < 31) {
+        var alt = days.map(function (x) { return x === N ? 31 : x; });
+        if (dates.every(function (d) { return test(d, alt); })) return 31;
+      }
+      return N;
+    });
+  }
+  function policyOf(matches) {
+    if (matches.indexOf('after') >= 0 && matches.indexOf('before') < 0) return 'after';
+    return 'before';
+  }
+
+  function detectPattern(datesIn) {
+    var dates = datesIn.slice().sort().filter(function (d, i, a) { return i === 0 || a[i - 1] !== d; });
+    if (dates.length < 2) return null;
+    var last = dates[dates.length - 1], n = dates.length;
+    var conf = n >= 3 ? 'high' : 'low';
+    var diffs = [];
+    for (var i = 1; i < dates.length; i++) diffs.push(diffDays(dates[i - 1], dates[i]));
+
+    if (diffs.every(function (d) { return d === 7; }))
+      return { type: 'weekly', weekday: weekday(last), anchor: last, confidence: conf, basedOn: n };
+    if (diffs.every(function (d) { return d > 0 && d % 14 === 0; }))
+      return { type: 'biweekly', anchor: last, confidence: conf, basedOn: n };
+    if (diffs.every(function (d) { return d > 0 && d % 7 === 0; }) && diffs.indexOf(7) >= 0)
+      return { type: 'weekly', weekday: weekday(last), anchor: last, confidence: 'low', basedOn: n };
+
+    var cands = domCandidates(dates);
+    // monthly
+    if (diffs.every(function (d) { return d >= 26 && d <= 35; })) {
+      var best = null;
+      cands.forEach(function (N) {
+        var ms = dates.map(function (d) { return domMatch(d, N); });
+        if (ms.every(Boolean)) {
+          var exact = ms.filter(function (x) { return x === 'exact'; }).length;
+          if (!best || exact > best.exact) best = { N: N, exact: exact, ms: ms };
+        }
+      });
+      if (best) best.N = preferLastDay(dates, [best.N], function (d, ds) { return domMatch(d, ds[0]); })[0];
+      if (best) return { type: 'monthly', days: [best.N], weekendPolicy: policyOf(best.ms), anchor: last, confidence: conf, basedOn: n };
+    }
+    // semimonthly
+    if (diffs.every(function (d) { return d >= 11 && d <= 20; })) {
+      var bestP = null;
+      for (var a = 0; a < cands.length; a++) for (var b = a + 1; b < cands.length; b++) {
+        var N1 = cands[a], N2 = cands[b];
+        if (N2 - N1 < 10 || N2 - N1 > 20) continue;
+        var ms2 = dates.map(function (d) { return domMatch(d, N1) || domMatch(d, N2); });
+        if (!ms2.every(Boolean)) continue;
+        var exact2 = ms2.filter(function (x) { return x === 'exact'; }).length;
+        if (!bestP || exact2 > bestP.exact) bestP = { days: [N1, N2], exact: exact2, ms: ms2 };
+      }
+      if (bestP) bestP.days = preferLastDay(dates, bestP.days, function (d, ds) { return domMatch(d, ds[0]) || domMatch(d, ds[1]); });
+      if (bestP) return { type: 'semimonthly', days: bestP.days, weekendPolicy: policyOf(bestP.ms), anchor: last, confidence: conf, basedOn: n };
+    }
+    return null;
+  }
+
+  function nominalPayDate(y, m, N, policy) {
+    var nominal = iso(y, m, Math.min(N, dim(y, m))), wd = weekday(nominal);
+    if (wd === 6) return addDays(nominal, policy === 'after' ? 2 : -1);
+    if (wd === 0) return addDays(nominal, policy === 'after' ? 1 : -2);
+    return nominal;
+  }
+
+  function isPayDate(p, d) {
+    if (p.type === 'random') return false;
+    if (p.type === 'weekly') return weekday(d) === p.weekday;
+    if (p.type === 'biweekly') return ((diffDays(p.anchor, d) % 14) + 14) % 14 === 0;
+    var x = ym(d);
+    // check this month and neighbors (weekend shifts can cross month boundaries)
+    for (var k = -1; k <= 1; k++) {
+      var y = x[0], m = x[1] + k; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
+      for (var i = 0; i < p.days.length; i++) if (nominalPayDate(y, m, p.days[i], p.weekendPolicy) === d) return true;
+    }
+    return false;
+  }
+  function expectedIn(p, start, end) {
+    var days = daysBetween(start, end), strict = days.filter(function (d) { return isPayDate(p, d); });
+    if (strict.length || !p.days) return strict;
+    // Weekend paydays sometimes go the other way (or not at all) — accept those before calling it off-schedule.
+    var exact = days.filter(function (d) { return p.days.some(function (N) { return domMatch(d, N) === 'exact'; }); });
+    return exact.length ? exact : days.filter(function (d) { return p.days.some(function (N) { return domMatch(d, N); }); });
+  }
+  function lastPayDate(p, onOrBefore) { for (var i = 0; i < 70; i++) { var d = addDays(onOrBefore, -i); if (isPayDate(p, d)) return d; } return null; }
+  function nextPayDate(p, from) { for (var i = 0; i < 70; i++) { var d = addDays(from, i); if (isPayDate(p, d)) return d; } return null; }
+
+  function describePattern(p) {
+    if (!p) return 'Not learned yet';
+    if (p.type === 'random') return 'Random days (asks each time)';
+    var w = p.weekendPolicy === 'after' ? ' (Monday if it lands on a weekend)' : ' (Friday before if it lands on a weekend)';
+    if (p.type === 'weekly') return 'Weekly on ' + WEEKDAYS[p.weekday] + 's';
+    if (p.type === 'biweekly') return 'Every other ' + WEEKDAYS[weekday(p.anchor)] + ' (e.g. ' + fmt(p.anchor) + ')';
+    var dd = p.days.map(function (N) { return N >= 31 ? 'last day' : ordinal(N); });
+    if (p.type === 'monthly') return 'Monthly on the ' + dd[0] + w;
+    return 'Twice a month on the ' + dd[0] + ' & ' + dd[1] + w;
+  }
+
+  /** Keep the same kind of schedule, but move it to `date` (used when "payday is changing"). */
+  function shiftPattern(p, date) {
+    if (!p) return null;
+    var q = JSON.parse(JSON.stringify(p));
+    q.anchor = date; q.confidence = 'low'; q.basedOn = 1; q.manual = true;
+    if (p.type === 'weekly') q.weekday = weekday(date);
+    if (p.type === 'monthly') q.days = [dom(date)];
+    if (p.type === 'semimonthly') {
+      var D = dom(date);
+      var idx = Math.abs(p.days[0] - D) <= Math.abs(p.days[1] - D) ? 0 : 1;
+      q.days[idx] = D; q.days.sort(function (a, b) { return a - b; });
+    }
+    return q;
+  }
+
+  function manualPattern(type, date, secondDay) {
+    var p = { type: type, anchor: date, confidence: 'set by you', basedOn: 0, manual: true, weekendPolicy: 'before' };
+    if (type === 'weekly') p.weekday = weekday(date);
+    if (type === 'monthly') p.days = [dom(date)];
+    if (type === 'semimonthly') p.days = [dom(date), Number(secondDay)].sort(function (a, b) { return a - b; });
+    if (type === 'random') { p = { type: 'random', manual: true, confidence: 'set by you' }; }
+    return p;
+  }
+
+  // Source names are matched loosely ("Sportsmen's" == "Sportsmen’s" == "sportsmens").
+  function srcKey(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function srcState(state, name) { return state.sources[srcKey(name)] || state.sources[name] || {}; }
+
+  // US federal holidays (observed dates) — paydays near these often move early/late.
+  var holidayCache = {};
+  function holidays(y) {
+    if (holidayCache[y]) return holidayCache[y];
+    var h = {};
+    function obs(m, d, name) { var x = iso(y, m, d), w = weekday(x); h[w === 6 ? addDays(x, -1) : w === 0 ? addDays(x, 1) : x] = name; }
+    function nth(m, wd, n, name) { var x = iso(y, m, 1); while (weekday(x) !== wd) x = addDays(x, 1); h[addDays(x, 7 * (n - 1))] = name; }
+    function lastWd(m, wd, name) { var x = iso(y, m, dim(y, m)); while (weekday(x) !== wd) x = addDays(x, -1); h[x] = name; }
+    obs(0, 1, "New Year's Day"); nth(0, 1, 3, 'MLK Day'); nth(1, 1, 3, "Presidents' Day"); lastWd(4, 1, 'Memorial Day');
+    obs(5, 19, 'Juneteenth'); obs(6, 4, 'Independence Day'); nth(8, 1, 1, 'Labor Day'); nth(9, 1, 2, 'Columbus Day');
+    obs(10, 11, 'Veterans Day'); nth(10, 4, 4, 'Thanksgiving'); obs(11, 25, 'Christmas');
+    var th = Object.keys(h).filter(function (k) { return h[k] === 'Thanksgiving'; })[0]; if (th) h[addDays(th, 1)] = 'Day after Thanksgiving';
+    holidayCache[y] = h; return h;
+  }
+  function holidayOn(d) { return holidays(+d.slice(0, 4))[d] || null; }
+  function holidayNear(a, b) { for (var d = addDays(a, -3); d <= addDays(b, 3); d = addDays(d, 1)) { var n = holidayOn(d); if (n) return { date: d, name: n }; } return null; }
+
+  /** Rows of one month tab → the cycle span (rows) that holds `date`. Used to write new income into the sheet. */
+  function findCycleSpan(rows, monthIdx, year, date, lastDataRow) {
+    var spans = [], cur = null;
+    rows.forEach(function (r) {
+      if (lastDataRow && r.row > lastDataRow) return;
+      if (str(r.label) !== '' || typeof r.label === 'number') {
+        var c = parseCycle(r.label, monthIdx, year);
+        if (c && !c.error) { cur = { start: c.start, end: c.end, rows: [] }; spans.push(cur); }
+      }
+      if (cur) cur.rows.push({ row: r.row, empty: str(r.incomeSource) === '' && num(r.incomeAmount) === 0 && str(r.expenseName) === '' && num(r.expenseAmount) === 0 });
+    });
+    for (var i = 0; i < spans.length; i++) if (date >= spans[i].start && date <= spans[i].end) return spans[i];
+    return null;
+  }
+
+  // ---------- same-day ordering standards ----------
+  function ruleOrder(rules, a, b) {
+    // newest rule wins; exact pairs beat wildcards
+    var ta = a.split(':')[0] + ':*', tb = b.split(':')[0] + ':*';
+    var passes = [[a, b], [ta, tb]];
+    for (var p = 0; p < passes.length; p++) {
+      for (var i = rules.length - 1; i >= 0; i--) {
+        var r = rules[i];
+        if (r.first === passes[p][0] && r.second === passes[p][1]) return 'a';
+        if (r.first === passes[p][1] && r.second === passes[p][0]) return 'b';
+      }
+    }
+    return null;
+  }
+  function itemLabel(key) {
+    var p = key.split(':'), t = p[0], v = p.slice(1).join(':');
+    if (v === '*') return t === 'income' ? 'All income' : 'All expenses';
+    return t === 'income' ? v + ' (income)' : v + ' (expense)';
+  }
+
+  function normState(s) {
+    s = s || {};
+    return { sources: s.sources || {}, resolved: s.resolved || {}, rules: s.rules || [], year: s.year, seeded: s.seeded, settings: s.settings || {} };
+  }
+
+  // ---------- main pass ----------
+  /**
+   * model: { year, today, months: [{ name, monthIdx, rows: [...] }] }
+   * returns { timeline, questions, schedules, warnings, notices, rules }
+   */
+  function resolve(model, stateIn) {
+    var state = normState(stateIn);
+    var year = model.year;
+    var warnings = [], notices = [], questions = [], timeline = [];
+    var known = {};     // source -> [iso] regular pay dates known so far (chronological)
+    var blocked = {};   // source -> true once it has an unanswered question
+    var askedPairs = {};
+    var sourcesSeen = {};
+    var lastDated = null;
+
+    var months = model.months.slice().sort(function (a, b) { return a.monthIdx - b.monthIdx; });
+    var allCycles = [];
+    months.forEach(function (mo) {
+      buildCycles(mo.name, mo.monthIdx, year, mo.rows, warnings).forEach(function (c) { allCycles.push(c); });
+    });
+
+    function patternFor(src) {
+      var ss = srcState(state, src);
+      if (ss.manual && ss.override) return ss.override; // a schedule you set always wins
+      var dates = (known[src] || []).filter(function (d) { return !ss.anchor || d >= ss.anchor; });
+      var p = detectPattern(dates);
+      if (!p && ss.override) p = ss.override;
+      return p;
+    }
+
+    allCycles.forEach(function (cyc) {
+      var usedThisCycle = {};
+      var items = [];
+      cyc.rows.forEach(function (r) {
+        var rowItems = [];
+        if (r.income) {
+          var src = r.income.source; sourcesSeen[src] = 1;
+          var key = cyc.sheet + '!' + r.row + ':income';
+          var fp = [src, r.income.amount, cyc.start, cyc.end].join('|');
+          var it = { kind: 'income', sheet: cyc.sheet, row: r.row, name: src, category: '', amount: r.income.amount, cycle: cyc, key: key, orderKey: 'income:' + src };
+          var saved = state.resolved[key];
+          var p = patternFor(src);
+          if (saved && saved.fp === fp) {
+            it.date = saved.date; it.status = saved.kind === 'irregular' ? 'irregular' : 'confirmed';
+            if (saved.kind !== 'irregular') (known[src] = known[src] || []).push(saved.date);
+          } else if (blocked[src]) {
+            it.status = 'waiting';
+          } else {
+            var q = null;
+            if (p && p.type === 'random') {
+              if (cyc.start === cyc.end) { it.date = cyc.start; it.status = 'inferred'; it.why = 'Cycle is a single day'; }
+              else q = { type: 'pickDay', random: true, learnedFrom: 0 };
+            } else if (p) {
+              var allExp = expectedIn(p, cyc.start, cyc.end);
+              var exp = allExp.filter(function (d) { return !usedThisCycle[src + d]; });
+              var hol = exp.length && srcState(state, src).holidayCheck ? holidayOn(exp[0]) : null;
+              if (exp.length && hol) {
+                q = { type: 'holiday', expected: exp[0], expectedLabel: fmtLong(exp[0]), holiday: hol, patternText: describePattern(p) };
+              } else if (exp.length) { it.date = exp[0]; it.status = 'inferred'; it.why = describePattern(p); (known[src] = known[src] || []).push(exp[0]); }
+              else {
+                var prev = known[src] && known[src][known[src].length - 1];
+                var near = holidayNear(cyc.start, cyc.end);
+                q = { type: 'offSchedule', pattern: p, patternText: describePattern(p),
+                  expectedNear: nextPayDate(p, cyc.start), lastPaid: prev || null,
+                  alreadyUsed: allExp.length ? allExp.map(fmtLong).join(', ') : null,
+                  holidayNear: near ? near.name + ' (' + fmtLong(near.date) + ')' : null };
+              }
+            } else if (cyc.start === cyc.end) {
+              it.date = cyc.start; it.status = 'inferred'; it.why = 'Cycle is a single day';
+              (known[src] = known[src] || []).push(cyc.start);
+            } else {
+              q = { type: 'pickDay', learnedFrom: (known[src] || []).length };
+            }
+            if (q) {
+              q.id = key; q.key = key; q.fp = fp; q.source = src; q.amount = r.income.amount;
+              q.sheet = cyc.sheet; q.row = r.row; q.cycleLabel = fmt(cyc.start) + (cyc.end !== cyc.start ? ' – ' + fmt(cyc.end) : '');
+              q.options = daysBetween(cyc.start, cyc.end).map(function (d) { return { date: d, label: fmtLong(d) }; });
+              questions.push(q); if (!q.random && !srcState(state, src).manual) blocked[src] = true; it.status = 'needs-answer';
+            }
+          }
+          it.fp = fp; it.options = daysBetween(cyc.start, cyc.end).map(function (d) { return { date: d, label: fmtLong(d) }; });
+          if (it.date) { usedThisCycle[src + it.date] = 1; if (!lastDated || it.date > lastDated) lastDated = it.date; }
+          rowItems.push(it);
+        }
+        if (r.expense) {
+          rowItems.push({ kind: 'expense', sheet: cyc.sheet, row: r.row, name: r.expense.name, category: r.expense.category,
+            amount: r.expense.amount, cycle: cyc, orderKey: 'expense:' + r.expense.category, status: 'estimated' });
+        }
+        // Same row = same day. Which do you standardize to come first?
+        if (rowItems.length === 2) {
+          var a = rowItems[0], b = rowItems[1];
+          var o = ruleOrder(state.rules, a.orderKey, b.orderKey);
+          if (o === 'b') rowItems.reverse();
+          else if (o === null) {
+            var pk = a.orderKey + '|' + b.orderKey;
+            a.orderPending = b.orderPending = true;
+            if (!askedPairs[pk]) {
+              askedPairs[pk] = 1;
+              questions.push({ type: 'sameDay', id: 'order:' + pk, a: a.orderKey, b: b.orderKey, aLabel: itemLabel(a.orderKey), bLabel: itemLabel(b.orderKey),
+                aDetail: a.name + ' $' + a.amount, bDetail: b.name + ' $' + b.amount, sheet: cyc.sheet, row: r.row,
+                cycleLabel: fmt(cyc.start) + (cyc.end !== cyc.start ? ' – ' + fmt(cyc.end) : '') });
+            }
+          }
+          rowItems[0].sameDayAs = rowItems[1]; rowItems[1].sameDayAs = rowItems[0];
+        }
+        rowItems.forEach(function (x) { items.push(x); });
+      });
+
+      // Expenses: estimate a date window from the dated items around them (rows are chronological).
+      for (var i = 0; i < items.length; i++) {
+        var it2 = items[i];
+        if (it2.date) continue;
+        var lo = cyc.start, hi = cyc.end;
+        for (var j = i - 1; j >= 0; j--) if (items[j].date) { lo = items[j].date; break; }
+        for (var k = i + 1; k < items.length; k++) if (items[k].date) { hi = items[k].date; break; }
+        if (it2.sameDayAs && it2.sameDayAs.date) lo = hi = it2.sameDayAs.date;
+        if (hi < lo) hi = lo;
+        it2.dateFrom = lo; it2.dateTo = hi;
+      }
+      items.forEach(function (x, idx) { x.orderInCycle = idx + 1; timeline.push(x); });
+    });
+
+    // Notices: a payday the pattern expected, with no paycheck recorded (only for cycles in the past of your data).
+    Object.keys(sourcesSeen).forEach(function (src) {
+      var p = patternFor(src);
+      if (!p || !lastDated) return;
+      allCycles.forEach(function (cyc) {
+        if (cyc.end > lastDated) return;
+        if (state.sources[src] && state.sources[src].anchor && cyc.start < state.sources[src].anchor) return;
+        var first = (known[src] || [])[0];
+        if (!first || cyc.end < first) return;
+        var exp = expectedIn(p, cyc.start, cyc.end);
+        var has = cyc.rows.some(function (r) { return r.income && r.income.source === src; });
+        if (exp.length && !has) notices.push('Expected a ' + src + ' payday on ' + fmtLong(exp[0]) + ' (' + cyc.sheet + ' ' + fmt(cyc.start) + ' – ' + fmt(cyc.end) + ') but no ' + src + ' income is entered there.');
+      });
+    });
+
+    // Running totals per month
+    var run = {};
+    timeline.forEach(function (x) {
+      run[x.sheet] = (run[x.sheet] || 0) + (x.kind === 'income' ? x.amount : -x.amount);
+      x.running = Math.round(run[x.sheet] * 100) / 100;
+    });
+
+    var today = model.today || iso(year, 0, 1);
+    var names = {}; Object.keys(sourcesSeen).forEach(function (s) { names[srcKey(s)] = s; });
+    Object.keys(state.sources).forEach(function (k) { var ss = state.sources[k]; if (ss.name && !names[srcKey(ss.name)]) names[srcKey(ss.name)] = ss.name; });
+    var schedules = Object.keys(names).map(function (k) { return names[k]; }).sort().map(function (src) {
+      var p = patternFor(src), ss = srcState(state, src);
+      var from = today < iso(year, 0, 1) ? iso(year, 0, 1) : today;
+      var nxt = p ? nextPayDate(p, from) : null, last = p ? lastPayDate(p, today) : null;
+      var amounts = timeline.filter(function (t) { return t.kind === 'income' && t.name === src; });
+      return { source: src, pattern: p, type: p ? p.type : null, text: describePattern(p), confidence: p ? p.confidence : null,
+        next: nxt, nextLabel: nxt ? fmtLong(nxt) : null, last: last, lastLabel: last ? fmtLong(last) : null,
+        lastAmount: amounts.length ? amounts[amounts.length - 1].amount : null, holidayCheck: !!ss.holidayCheck,
+        paydaysSeen: (known[src] || []).length, changedOn: ss.anchor && !ss.manual ? ss.anchor : null, manual: !!ss.manual };
+    });
+
+    return {
+      timeline: timeline.map(function (x) {
+        return { sheet: x.sheet, row: x.row, kind: x.kind, name: x.name, category: x.category, amount: x.amount,
+          cycle: fmt(x.cycle.start) + (x.cycle.end !== x.cycle.start ? ' – ' + fmt(x.cycle.end) : ''),
+          date: x.date || null, dateFrom: x.dateFrom || null, dateTo: x.dateTo || null,
+          dateText: x.date ? fmtLong(x.date) : (x.dateFrom === x.dateTo ? '~' + fmtLong(x.dateFrom) : '~' + fmt(x.dateFrom) + '–' + fmt(x.dateTo)),
+          status: x.status, why: x.why || '', orderInCycle: x.orderInCycle, orderPending: !!x.orderPending, running: x.running,
+          key: x.key || null, fp: x.fp || null, options: x.options || null, holiday: x.date ? holidayOn(x.date) : null };
+      }),
+      questions: questions, schedules: schedules, warnings: warnings, notices: notices,
+      rules: state.rules.map(function (r, i) { return { index: i, text: itemLabel(r.first) + ' before ' + itemLabel(r.second) }; })
+    };
+  }
+
+  /** Apply an answer to a question from resolve(). Returns the new state. */
+  function applyAnswer(stateIn, q, ans) {
+    var state = normState(JSON.parse(JSON.stringify(stateIn || {})));
+    if (q.type === 'pickDay') {
+      state.resolved[q.key] = { date: ans.date, fp: q.fp, kind: ans.mode === 'irregular' ? 'irregular' : 'regular' };
+    } else if (q.type === 'holiday') {
+      state.resolved[q.key] = { date: ans.date, fp: q.fp, kind: ans.date === q.expected ? 'regular' : 'irregular' };
+    } else if (q.type === 'offSchedule') {
+      if (ans.mode === 'irregular') {
+        state.resolved[q.key] = { date: ans.date, fp: q.fp, kind: 'irregular' };
+      } else { // 'changing'
+        state.resolved[q.key] = { date: ans.date, fp: q.fp, kind: 'regular' };
+        var old = srcState(state, q.source);
+        delete state.sources[q.source];
+        state.sources[srcKey(q.source)] = { name: q.source, anchor: ans.date, override: shiftPattern(q.pattern, ans.date), changedFrom: describePattern(q.pattern),
+          manual: !!old.manual, holidayCheck: !!old.holidayCheck };
+      }
+    } else if (q.type === 'sameDay') {
+      var first = ans.first === 'a' ? q.a : q.b, second = ans.first === 'a' ? q.b : q.a;
+      if (ans.scope === 'all') { first = first.split(':')[0] + ':*'; second = second.split(':')[0] + ':*'; }
+      if (first.split(':')[0] === second.split(':')[0] && ans.scope === 'all') { first = ans.first === 'a' ? q.a : q.b; second = ans.first === 'a' ? q.b : q.a; }
+      state.rules.push({ first: first, second: second });
+    }
+    return state;
+  }
+
+  function setSchedule(stateIn, source, type, date, secondDay, holidayCheck) {
+    var state = normState(JSON.parse(JSON.stringify(stateIn || {})));
+    var old = srcState(state, source);
+    delete state.sources[source];
+    state.sources[srcKey(source)] = { name: source, anchor: date, override: manualPattern(type, date, secondDay), manual: true,
+      holidayCheck: holidayCheck === undefined ? !!old.holidayCheck : !!holidayCheck };
+    return state;
+  }
+  function clearSchedule(stateIn, source) {
+    var state = normState(JSON.parse(JSON.stringify(stateIn || {})));
+    delete state.sources[source]; delete state.sources[srcKey(source)];
+    return state;
+  }
+  /** Record (or correct) the exact day of one income row. mode: 'regular' | 'irregular'. */
+  function setIncomeDate(stateIn, key, fp, date, mode) {
+    var state = normState(JSON.parse(JSON.stringify(stateIn || {})));
+    state.resolved[key] = { date: date, fp: fp, kind: mode === 'irregular' ? 'irregular' : 'regular' };
+    return state;
+  }
+  /** First-Friday / first-Monday style anchor for a preset weekly schedule. */
+  function firstWeekday(year, wd) { var d = iso(year, 0, 1); while (weekday(d) !== wd) d = addDays(d, 1); return d; }
+  function deleteRule(stateIn, index) {
+    var state = normState(JSON.parse(JSON.stringify(stateIn || {})));
+    state.rules.splice(index, 1);
+    return state;
+  }
+
+  return {
+    MONTHS: MONTHS, resolve: resolve, applyAnswer: applyAnswer, setSchedule: setSchedule, clearSchedule: clearSchedule,
+    deleteRule: deleteRule, detectPattern: detectPattern, describePattern: describePattern, parseCycle: parseCycle,
+    expectedIn: expectedIn, isPayDate: isPayDate, iso: iso, fmt: fmt, setIncomeDate: setIncomeDate, firstWeekday: firstWeekday,
+    findCycleSpan: findCycleSpan, holidays: holidays, srcKey: srcKey, lastPayDate: lastPayDate, fmtLong: fmtLong
+  };
+})();
+
+if (typeof module !== 'undefined') module.exports = FSP;
+
+// Sample-data backend for App.html (Settings → Data → Sample data, and demo-app.html).
+// Same calls as Dashboard.gs; everything stays in memory. Net worth numbers are FSP Template's; the rest is made up.
+(function () {
+  var Y = 2026, M = FSP.MONTHS, TODAY = null, months, model, state, ready = false;
+  function iso(d) { return d.toISOString().slice(0, 10); }
+  function init() {
+    if (ready) return; ready = true;
+    var now = new Date(); TODAY = iso(new Date(Date.UTC(Y, now.getMonth(), now.getDate())));
+    var curM = +TODAY.slice(5, 7) - 1, curD = +TODAY.slice(8, 10);
+    function dim(m) { return new Date(Date.UTC(Y, m + 1, 0)).getUTCDate(); }
+    var cyc = [[1, 3], [4, 7], [8, 11], [12, 15], [16, 19], [20, 23], [24, 27], [28, 31]];
+    var seed = 7; function rnd() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
+    var spend = ['Groceries', 'Gas', 'Eating out', 'Phone', 'Gym', 'Gifts'];
+    // Goldfish + Sportsmen's every Friday, Allowance every Monday, Coaching now and then.
+    function itemsFor(m, d) {
+      var wd = new Date(Date.UTC(Y, m, d)).getUTCDay(), out = [];
+      if (wd === 5) { out.push({ inc: ['Goldfish', Math.round(80 + rnd() * 25)] }); if (rnd() < .85) out.push({ inc: ["Sportsmen's", Math.round(35 + rnd() * 20)] }); }
+      if (wd === 1) out.push({ inc: ['Allowance', 20] });
+      if (d === 18 && m % 2 === 0) out.push({ inc: ['Coaching', 60] });
+      return out;
+    }
+    months = M.map(function (name, mi) {
+      var rows = [], r = 6;
+      cyc.forEach(function (c, ci) {
+        var end = Math.min(c[1], dim(mi)), items = [];
+        if (mi < curM || (mi === curM && c[0] <= curD)) {
+          // leave today's paychecks out so "did you get paid today?" has something to ask
+          for (var d = c[0]; d <= end; d++) if (mi < curM || d < curD) itemsFor(mi, d).forEach(function (x) { items.push(x); });
+          if (rnd() < 0.8) items.push({ exp: [spend[Math.floor(rnd() * spend.length)], Math.round(15 + rnd() * 60), 'Spending'] });
+          if (ci === 2) items.push({ exp: ['Fidelity', mi % 2 ? 300 : 200, 'Investment'] });
+          if (ci === 5) items.push({ exp: ['HYSA', 80, 'Savings'] });
+          if (mi === 6 && ci === 3) items.push({ exp: ['New laptop', 640, 'Big Purchases'] });
+          if (mi === 9 && ci === 5) items.push({ inc: ['Goldfish', 40] }); // an extra check off-schedule
+        }
+        if (!items.length) items.push({});
+        items.forEach(function (it, k) {
+          rows.push({ row: r++, label: k === 0 ? (mi + 1) + '/' + c[0] + ' - ' + (mi + 1) + '/' + end : '',
+            incomeSource: it.inc ? it.inc[0] : '', incomeAmount: it.inc ? it.inc[1] : '',
+            expenseName: it.exp ? it.exp[0] : '', expenseAmount: it.exp ? it.exp[1] : '', category: it.exp ? it.exp[2] : '' });
+        });
+      });
+      return { name: name, monthIdx: mi, rows: rows };
+    });
+    model = { year: Y, today: TODAY, months: months };
+    state = { year: Y, settings: {} };
+    [['Goldfish', 'weekly', 5, true], ["Sportsmen's", 'weekly', 5, true], ['Allowance', 'weekly', 1, false], ['Other', 'random'], ['Coaching', 'random']].forEach(function (d) {
+      state = FSP.setSchedule(state, d[0], d[1], d[1] === 'random' ? '2026-01-01' : FSP.firstWeekday(Y, d[2]), null, !!d[3]);
+    });
+    // Pretend earlier questions were answered; keep a couple so the demo shows them.
+    function keep(q) { return (q.type === 'holiday' && q.sheet === 'July' && q.source === 'Goldfish') || q.type === 'offSchedule'; }
+    for (var pass = 0; pass < 20; pass++) {
+      var qs = FSP.resolve(model, state).questions.filter(function (x) { return !keep(x); });
+      if (!qs.length) break;
+      qs.forEach(function (q) { state = FSP.applyAnswer(state, q, q.type === 'holiday' ? { date: q.expected } : q.type === 'sameDay' ? { first: 'a' } : { date: q.options[Math.min(1, q.options.length - 1)].date, mode: 'regular' }); });
+    }
+  }
+
+  var nwVals = {
+    chase: [3993.34, 4206.56, 3730.53, 3829.28, 3905.33, 3769.15, 4196.94, 4928.5, 5363.03, null, null, null],
+    fid: [6203.21, 6694.7, 7342.29, 8718.93, 10304.67, 10763.11, 11392.52, 12788.11, 13227.94, null, null, null],
+    contrib: [500, 500, 1000, 500, 1000, 500, 1000, 1000, 500, null, null, null],
+    div: [1.1, 0.5, 3.4, 55.98, 0.86, 12.59, 18.12, 1.13, 8.23, null, null, null],
+    pct: [null, -0.00137187037, -0.05264014818, 0.1193959923, 0.0671802618, -0.004033122846, -0.03443149796, 0.03472366079, -0.004705151895, null, null, null]
+  };
+  // Made-up S&P 500 month-end closes (index 0 = last December) and a latest close.
+  var mkEnds = [5880, 6040, 5950, 5610, 6150, 6420, 6380, 6230, 6440, 6400, 6560, null, null];
+  function market() { var cur = +TODAY.slice(5, 7) - 1, ends = mkEnds.map(function (v, i) { return i <= cur ? v : null; }); ends[cur + 1] = null;
+    return { index: 'S&P 500', latest: { d: TODAY, c: 6612 }, monthEnd: ends }; }
+  function dashboard() {
+    var a = FSP.resolve(model, state); a.year = Y;
+    return {
+      sample: true, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
+      netWorth: { accounts: [{ name: 'Chase', type: 'cash', values: nwVals.chase }, { name: 'Fidelity (Rounds)', type: 'investments', values: nwVals.fid }],
+        total: nwVals.chase.map(function (v, i) { return v == null ? null : v + nwVals.fid[i]; }), contributions: nwVals.contrib, dividends: nwVals.div, investPct: nwVals.pct, lastMonth: 8 },
+      overview: { quarters: [{ label: 'Q1', goal: 689.01 }, { label: 'Q2', goal: 964.62 }, { label: 'Q3', goal: 3215.39 }, { label: 'Q4', goal: 1929.23 }], yearGoal: 6798.25,
+        sourceNames: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'] },
+      sources: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'],
+      market: market(), settings: state.settings || {},
+      monthly: months.map(function (mo) {
+        var m = { name: mo.name, income: 0, expenses: 0, bySource: {}, byCategory: {}, goals: { Invest: .65, Spending: .15, Saving: .2 } };
+        mo.rows.forEach(function (r) { var inc = +r.incomeAmount || 0, exp = +r.expenseAmount || 0;
+          if (inc) { m.income += inc; m.bySource[r.incomeSource] = (m.bySource[r.incomeSource] || 0) + inc; }
+          if (exp) { m.expenses += exp; m.byCategory[r.category] = (m.byCategory[r.category] || 0) + exp; } });
+        return m;
+      }),
+      assistant: a
+    };
+  }
+  function addIncome(src, amt, date, mode) {
+    var mi = +date.slice(5, 7) - 1, mo = months[mi];
+    var span = FSP.findCycleSpan(mo.rows, mi, Y, date, null);
+    if (!span) throw new Error('No cycle covers that date');
+    var free = span.rows.filter(function (r) { return r.empty; })[0], row;
+    if (free) row = free.row;
+    else {
+      row = span.rows[span.rows.length - 1].row + 1;
+      mo.rows.forEach(function (r) { if (r.row >= row) r.row++; });
+      var at = mo.rows.findIndex(function (r) { return r.row > row; });
+      mo.rows.splice(at < 0 ? mo.rows.length : at, 0, { row: row, label: '' });
+    }
+    var target = mo.rows.filter(function (r) { return r.row === row; })[0];
+    target.incomeSource = src; target.incomeAmount = amt;
+    state = FSP.setIncomeDate(state, mo.name + '!' + row + ':income', [src, amt, span.start, span.end].join('|'), date, mode);
+  }
+  var impl = {
+    getDashboard: function () {},
+    answerQuestion: function (id, a) { var q = FSP.resolve(model, state).questions.filter(function (x) { return x.id === id; })[0]; if (q) state = FSP.applyAnswer(state, q, a); },
+    addIncome: addIncome,
+    addIncomes: function (items) { items.forEach(function (it) { addIncome(it.source, it.amount, it.date, it.mode); }); },
+    setIncomeDate: function (k, fp, d, mode) { state = FSP.setIncomeDate(state, k, fp, d, mode); },
+    setSchedule: function (s, t, d, d2, h) { state = FSP.setSchedule(state, s, t, d, d2, h); },
+    clearSchedule: function (s) { state = FSP.clearSchedule(state, s); },
+    deleteRule: function (i) { state = FSP.deleteRule(state, i); },
+    setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null; }
+  };
+  function runner(ok, fail) {
+    var o = { withSuccessHandler: function (f) { return runner(f, fail); }, withFailureHandler: function (f) { return runner(ok, f); } };
+    Object.keys(impl).forEach(function (k) { o[k] = function () { var a = arguments; setTimeout(function () {
+      try { init(); impl[k].apply(null, a); ok && ok(dashboard()); } catch (e) { console.error(e); fail && fail(e); } }, 150); }; });
+    return o;
+  }
+  window.FSP_MOCK_API = runner();
+})();
+
+</script>
+<script>
 // ---------- connection: inside Google (google.script.run), demo mock, or home-screen app (private key) ----------
-var CONN = 'fsp-connection-v1', CACHE = 'fsp-dashboard-v1';
+var CONN = 'fsp-connection-v1', CACHE;
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
 function readLinkFromHash() {
   var m = location.hash.match(/api=([^&]+)&key=([0-9a-f]+)/i);
@@ -167,14 +821,15 @@ function readLinkFromHash() {
 readLinkFromHash();
 window.addEventListener('hashchange', function () { if (readLinkFromHash()) load(true); });
 function connection() { try { return JSON.parse(store(CONN) || 'null'); } catch (e) { return null; } }
-var MODE = (typeof google !== 'undefined' && google.script) ? 'google' : window.FSP_MOCK_API ? 'mock' : 'phone';
+var HAS_SAMPLE = !!window.FSP_MOCK_API;
+var DATA = store('fsp-data') || (window.FSP_DEMO_ONLY ? 'sample' : 'real');
+var MODE = (typeof google !== 'undefined' && google.script) ? 'google' : (HAS_SAMPLE && DATA === 'sample') ? 'mock' : 'phone';
+CACHE = 'fsp-dash-v2-' + MODE;
 
 function call(fn, args, ok, fail) {
   args = args || [];
-  if (MODE === 'google' || MODE === 'mock') {
-    var r = (MODE === 'google' ? google.script.run : window.FSP_MOCK_API).withSuccessHandler(ok).withFailureHandler(function (e) { fail(e.message || String(e)); });
-    r[fn].apply(r, args); return;
-  }
+  if (MODE === 'google') { google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) { fail(e.message || String(e)); }).appCall(fn, args); return; }
+  if (MODE === 'mock') { var r = window.FSP_MOCK_API.withSuccessHandler(ok).withFailureHandler(function (e) { fail(e.message || String(e)); }); r[fn].apply(r, args); return; }
   var c = connection();
   if (!c) { fail('NOT_CONNECTED'); return; }
   fetch(c.api, { method: 'POST', body: JSON.stringify({ key: c.key, fn: fn, args: args }), redirect: 'follow' })
@@ -197,9 +852,13 @@ function dt(s) { var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1
 function dlabel(s) { var d = dt(s); return WD[d.getUTCDay()] + ' ' + (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); }
 
 // Click handlers without quoting headaches: on(fn) → onclick="R(n)"
-var REG = [];
-function on(fn) { REG.push(fn); return 'onclick="R(' + (REG.length - 1) + ',event)"'; }
+var REG = {}, REG_ID = 0;
+function on(fn) { REG[++REG_ID] = fn; return 'onclick="R(' + REG_ID + ',event)"'; }
 function R(i, e) { if (REG[i]) REG[i](e); }
+// Redraws drop old handlers, except ones an open bottom sheet still uses.
+function resetHandlers() { var keep = {};
+  document.querySelectorAll('#sheet [onclick]').forEach(function (el) { var m = (el.getAttribute('onclick') || '').match(/R\((\d+)/); if (m && REG[m[1]]) keep[m[1]] = REG[m[1]]; });
+  REG = keep; }
 
 function toast(msg) { var t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { t.classList.remove('on'); }, 2200); }
 
@@ -213,22 +872,33 @@ var GOAL_KEY = { 'Invest': 'Investment', 'Spending': 'Spending', 'Saving': 'Savi
 function load(force) {
   if (!force) { try { var c = store(CACHE); if (c) { D = JSON.parse(c); render(); } } catch (e) {} }
   var r = document.getElementById('refresh'); if (r) r.textContent = 'Updating…';
-  call('getDashboard', [], function (d) { D = d; store(CACHE, JSON.stringify(d)); render(); },
+  call('getDashboard', [], function (d) { D = d; store(CACHE, JSON.stringify(d)); render(); maybeCheckin(); },
     function (err) {
       if (/NOT_CONNECTED/.test(err)) { store(CACHE, null); D = null; return setupScreen(); }
       if (!D) document.getElementById('app').innerHTML = '<div class="loading">' + esc(err) + '<br><br><button class="btn" onclick="load(true)">Try again</button></div>';
       else { toast(err); var r2 = document.getElementById('refresh'); if (r2) r2.textContent = '↻ ' + D.updated; }
     });
 }
-function assistant(fn, args, after) {
-  if (busy) return; busy = true;
-  call(fn, args, function (res) { busy = false; D.assistant = res; picks = {}; store(CACHE, JSON.stringify(D)); closeSheet(); render(); if (after) after(); },
-    function (e) { busy = false; toast(e); });
+// Every change returns the whole dashboard. `optimistic(D)` updates the screen instantly while it saves.
+var QUEUE = Promise.resolve(), PENDING = [];
+function act(fn, args, after, optimistic) {
+  var op = { optimistic: optimistic };
+  PENDING.push(op);
+  if (optimistic) { optimistic(D); closeSheet(); render(); }
+  QUEUE = QUEUE.then(function () { return new Promise(function (done) {
+    call(fn, args, function (res) {
+      PENDING.splice(PENDING.indexOf(op), 1);
+      D = res; PENDING.forEach(function (p) { if (p.optimistic) p.optimistic(D); });
+      picks = {}; store(CACHE, JSON.stringify(D)); if (!optimistic) closeSheet(); render(); if (after) after(); done();
+    }, function (e) { PENDING.splice(PENDING.indexOf(op), 1); toast(e); if (optimistic) load(true); done(); });
+  }); });
 }
+function assistant(fn, args, after) { act(fn, args, after); }
+function dropQ(id) { return function (d) { d.assistant.questions = d.assistant.questions.filter(function (x) { return x.id !== id; }); }; }
 
 function setupScreen() {
   document.getElementById('nav').innerHTML = '';
-  REG = [];
+  resetHandlers();
   var h = '<header><h1>Connect</h1></header><div class="card"><div style="font-weight:650;font-size:17px;margin-bottom:6px">Link this app to your sheet</div>' +
     '<div class="sub">On a computer, open your FSP Google Sheet and choose <b>FSP Assistant → Connect my iPhone app</b>. Scan the QR code with your iPhone camera and open it in Safari, then tap <b>Share → Add to Home Screen</b>.</div>' +
     '<label class="field"><span>Or paste the link here</span><input class="input" id="paste" placeholder="https://…#api=…&key=…" autocapitalize="off" autocorrect="off"></label>' +
@@ -236,7 +906,8 @@ function setupScreen() {
       var v = document.getElementById('paste').value, m = v.match(/api=([^&]+)&key=([0-9a-f]+)/i);
       if (!m) return toast('That link doesn\'t look right');
       store(CONN, JSON.stringify({ api: decodeURIComponent(m[1]), key: m[2] })); load(true);
-    }) + '>Connect</button></div>';
+    }) + '>Connect</button>' +
+    (HAS_SAMPLE ? '<button class="btn block" ' + on(function () { setData('sample'); }) + '>Try it with sample data</button>' : '') + '</div>';
   document.getElementById('app').innerHTML = h;
 }
 
@@ -380,11 +1051,8 @@ function openAddIncome(src) {
     var amt = parseFloat(String(addState.amount).replace(/[$,\s]/g, ''));
     if (!(amt > 0)) return toast('Enter an amount');
     var irr = document.getElementById('irr'), mode = irr && irr.checked ? 'irregular' : 'regular';
-    if (busy) return; busy = true; toast('Saving…');
-    var src2 = addState.source;
-    call('addIncome', [src2, amt, addState.date, mode], function () {
-      busy = false; closeSheet(); toast('Added ' + money(amt) + ' · ' + src2); addState = null; load(true);
-    }, function (e) { busy = false; toast(e); });
+    var src2 = addState.source; toast('Saving…');
+    act('addIncome', [src2, amt, addState.date, mode], function () { toast('Added ' + money(amt) + ' · ' + src2); addState = null; });
   }) + '>Add to sheet</button>';
   openSheet(h);
   document.getElementById('pickdate').addEventListener('change', function () {
@@ -447,38 +1115,170 @@ function openSchedule(s) {
   draw();
 }
 
+// ---------- income goal ----------
+function goals() {
+  var base = D.overview && D.overview.yearGoal || 0, custom = D.settings && D.settings.incomeGoal || 0;
+  return { base: base, custom: custom, goal: custom || base, scale: base && custom ? custom / base : 1 };
+}
+function reachedMonth(target) { if (!target) return null; var run = 0; for (var i = 0; i < 12; i++) { run += D.monthly[i].income; if (run >= target) return i; } return null; }
+function openGoal() {
+  var g = goals();
+  openSheet('<h2>Income goal</h2><div class="muted">Your sheet’s goal is ' + money(g.base, 0) + '. Set a bigger one to chase next — Home and Income will track it. Your sheet isn’t changed.</div>' +
+    '<label class="field"><span>Goal for ' + D.today.slice(0, 4) + '</span><input class="input money" id="goalIn" inputmode="decimal" placeholder="$10,000" value="' + (g.custom || '') + '"></label>' +
+    '<button class="btn primary block" style="margin-top:16px" ' + on(function () {
+      var v = parseFloat(String(document.getElementById('goalIn').value).replace(/[$,\s]/g, ''));
+      if (!(v > 0)) return toast('Enter an amount');
+      act('setSettings', [{ incomeGoal: v }], null, function (d) { d.settings = d.settings || {}; d.settings.incomeGoal = v; });
+    }) + '>Save goal</button>' +
+    (g.custom ? '<button class="btn block" ' + on(function () { act('setSettings', [{ incomeGoal: null }], null, function (d) { d.settings = d.settings || {}; d.settings.incomeGoal = null; }); }) + '>Go back to the sheet’s goal</button>' : ''));
+}
+
+// ---------- net worth: last entry vs. estimate for today ----------
+var nwMode = store('fsp-nw-mode') || 'last';
+function setNwMode(m) { nwMode = m; store('fsp-nw-mode', m); render(); }
+function monthEndLabel(i) { return D.months[i] + ' ' + new Date(Date.UTC(+D.today.slice(0, 4), i + 1, 0)).getUTCDate(); }
+/**
+ * Today's guess = last Net Worth entry
+ *   + income entered since − spending since (Investment moves cash → investments; Savings stays cash)
+ *   + market move since the entry × how much your investments have moved with the market.
+ */
+function nwEstimate() {
+  var st = nwStats(); if (!st) return null;
+  var i = st.i, cur = currentMonthIdx(), nw = D.netWorth, mk = D.market;
+  if (cur <= i) return null;
+  var income = 0, invest = 0, spent = 0, saved = 0;
+  for (var k = i + 1; k <= cur; k++) { var m = D.monthly[k]; income += m.income;
+    Object.keys(m.byCategory).forEach(function (c) { var v = m.byCategory[c]; if (c === 'Investment') invest += v; else if (c === 'Savings') saved += v; else spent += v; }); }
+  var mret = null, beta = 1, betaN = 0;
+  if (mk && mk.monthEnd && mk.monthEnd[i + 1] && mk.latest) {
+    mret = mk.latest.c / mk.monthEnd[i + 1] - 1;
+    var num = 0, den = 0;
+    for (var j = 1; j <= i; j++) { var u = nw.investPct && nw.investPct[j], a = mk.monthEnd[j + 1], b = mk.monthEnd[j];
+      if (u == null || !a || !b) continue; var mm = a / b - 1; num += u * mm; den += mm * mm; betaN++; }
+    if (betaN >= 3 && den > 0) beta = Math.max(0, Math.min(2, num / den));
+  }
+  var growth = mret == null ? 0 : st.inv * beta * mret;
+  var cash = st.cash + income - spent - invest, inv = st.inv + growth + invest;
+  return { i: i, cur: cur, cash: cash, inv: inv, total: cash + inv, income: income, spent: spent, invest: invest, saved: saved,
+    mret: mret, beta: beta, betaN: betaN, growth: growth, marketDate: mk && mk.latest ? mk.latest.d : null };
+}
+function estLine(from, to, e) { return D.months.map(function (m, k) { return k === e.i ? from : k === e.cur ? to : null; }); }
+function tipMonths(e) { var last = D.netWorth ? D.netWorth.lastMonth : -1;
+  return D.monthly.map(function (m, k) { return e && k === e.cur ? m.name + ' · estimate' : k <= last ? m.name + ' · entry' : m.name; }); }
+function nwHero(home) {
+  var st = nwStats(), e = nwEstimate(), est = nwMode === 'est' && e, h = '';
+  if (e) h += '<div class="seg" style="display:flex;margin-bottom:12px"><button style="flex:1" class="' + (!est ? 'on' : '') + '" ' + on(function () { setNwMode('last'); }) + '>Last entry · ' + monthEndLabel(st.i) + '</button>' +
+    '<button style="flex:1" class="' + (est ? 'on' : '') + '" ' + on(function () { setNwMode('est'); }) + '>Estimate today</button></div>';
+  h += '<div class="label">' + (est ? 'Estimated net worth · ' + dlabel(D.today) : 'Net worth · your ' + monthEndLabel(st.i) + ' entry') + '</div>';
+  h += '<div class="hero">' + money(est ? e.total : st.cur) + '</div>';
+  if (est) { var d = e.total - st.cur; h += '<div class="delta ' + (d >= 0 ? 'up' : 'down') + '">' + (d >= 0 ? '▲ ' : '▼ ') + money(Math.abs(d)) + ' since your ' + monthEndLabel(st.i) + ' entry</div>'; }
+  else if (st.change != null) h += '<div class="delta ' + (st.change >= 0 ? 'up' : 'down') + '">' + (st.change >= 0 ? '▲ ' : '▼ ') + money(Math.abs(st.change)) + ' (' + pct(Math.abs(st.pct), 1) + ') vs ' + D.months[st.i - 1] +
+    (home ? '' : ' · ' + (st.cur - st.ytdStart >= 0 ? '+' : '−') + money(Math.abs(st.cur - st.ytdStart), 0) + ' since Jan') + '</div>';
+  if (e) h += '<div class="muted" style="margin-top:4px">' + (est ? 'A guess, not a balance' + (home ? ' — see Net Worth for how it’s worked out.' : '.') : 'From your Net Worth tab. Nothing after ' + monthEndLabel(st.i) + ' is included.') + '</div>';
+  var cash = est ? e.cash : st.cash, inv = est ? e.inv : st.inv, tot = cash + inv || 1;
+  h += '<div class="split"><div style="width:' + Math.max(0, cash / tot * 100) + '%;background:var(--s1)"></div><div style="width:' + Math.max(0, inv / tot * 100) + '%;background:var(--s2)"></div></div>';
+  h += '<div class="row sub"><span><i class="sw" style="background:var(--s1)"></i>Cash ' + money(cash, 0) + '</span><span><i class="sw" style="background:var(--s2)"></i>Investments ' + money(inv, 0) + '</span></div>';
+  return h;
+}
+function estimateCard(e, st) {
+  var from = monthEndLabel(st.i), months = D.monthly.slice(e.i + 1, e.cur + 1).map(function (m) { return m.name.slice(0, 3); }).join('–');
+  function line(label, val, sub) { return '<div class="row"><span>' + label + (sub ? '<br><span class="muted">' + sub + '</span>' : '') + '</span><span class="num ' + (val > 0 ? 'up' : val < 0 ? 'down' : '') + '" style="white-space:nowrap">' + (val > 0 ? '+' : val < 0 ? '−' : '') + money(Math.abs(val), 0) + '</span></div>'; }
+  var h = '<div class="card"><div class="label">How today’s estimate is worked out</div><div class="list">';
+  h += '<div class="row"><span>Your ' + from + ' entry</span><span class="num">' + money(st.cur, 0) + '</span></div>';
+  h += line('Income since', e.income, months + ' from your month tabs');
+  h += line('Spending since', -e.spent, e.invest ? money(e.invest, 0) + ' moved to investing (no change in net worth)' : '');
+  if (e.mret == null) h += '<div class="row"><span>Market<br><span class="muted">Market data isn’t loaded yet — check back in a minute</span></span><span class="num">$0</span></div>';
+  else h += line('Market', e.growth, 'S&P 500 ' + (e.mret >= 0 ? '+' : '−') + pct(Math.abs(e.mret), 1) + ' since ' + from + ' × your ' + e.beta.toFixed(2) + ' market sensitivity');
+  h += '<div class="row"><span><b>Estimate today</b></span><span class="num">' + money(e.total, 0) + '</span></div></div>';
+  h += '<div class="muted" style="margin-top:8px">Sensitivity compares your investments’ monthly returns with the S&P 500 over ' + (e.betaN >= 3 ? e.betaN + ' months' : 'too few months yet, so 1.00 is used') +
+    ' (1.00 = moves exactly with the market). Savings counts as cash. Update the Net Worth tab at month end for the real number.</div></div>';
+  return h;
+}
+
+// ---------- "did you get paid today?" ----------
+var checkinShown = false;
+function dueToday() {
+  return D.assistant.schedules.filter(function (s) {
+    if (!s.type || s.type === 'random' || s.last !== D.today) return false;
+    if (store('fsp-checkin-' + D.today + '-' + s.source)) return false;
+    return !D.assistant.timeline.some(function (t) { return t.kind === 'income' && t.name === s.source && t.date === D.today; });
+  });
+}
+function maybeCheckin() {
+  if (checkinShown || !D || store('fsp-checkin-off') === '1' || document.getElementById('sheet').classList.contains('on')) return;
+  var due = dueToday(); if (!due.length) return;
+  checkinShown = true; openCheckin(due);
+}
+function openCheckin(due) {
+  var h = '<h2>Payday! Did you get paid today?</h2><div class="muted">' + dlabel(D.today) + ' is your usual payday for ' + due.map(function (s) { return esc(s.source); }).join(' & ') + '.</div>';
+  h += due.map(function (s, i) { return '<div class="card" style="margin:12px 0 0"><label class="chk" style="margin:0"><input type="checkbox" id="ck' + i + '" checked> <b style="color:var(--ink)">' + esc(s.source) + '</b></label>' +
+    '<input class="input money" style="margin-top:10px" id="ca' + i + '" inputmode="decimal" placeholder="$0.00" value="' + (s.lastAmount || '') + '"></div>'; }).join('');
+  h += '<button class="btn primary block" style="margin-top:14px" ' + on(function () {
+    var items = [];
+    for (var i = 0; i < due.length; i++) {
+      if (!document.getElementById('ck' + i).checked) continue;
+      var amt = parseFloat(String(document.getElementById('ca' + i).value).replace(/[$,\s]/g, ''));
+      if (!(amt > 0)) return toast('Enter an amount for ' + due[i].source);
+      items.push({ source: due[i].source, amount: amt, date: D.today, mode: 'regular' });
+    }
+    if (!items.length) return toast('Tick at least one');
+    toast('Saving…');
+    act('addIncomes', [items], function () { toast('Added to your sheet'); });
+  }) + '>Yes — add to my sheet</button>';
+  h += '<div class="two"><button class="btn" ' + on(closeSheet) + '>Not yet</button><button class="btn" ' + on(function () {
+    due.forEach(function (s) { store('fsp-checkin-' + D.today + '-' + s.source, '1'); }); closeSheet(); toast('Won’t ask again today'); }) + '>Not paid today</button></div>';
+  openSheet(h);
+}
+
+// ---------- settings ----------
+function setData(v) { store('fsp-data', v); location.reload(); }
+function openSettings() {
+  var g = goals(), h = '<h2>Settings</h2>';
+  if (HAS_SAMPLE) h += '<div class="field"><span>Data</span><div class="seg" style="display:flex"><button style="flex:1" class="' + (MODE !== 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE === 'mock') setData('real'); }) + '>My sheet</button>' +
+    '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
+    '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
+  h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
+  h += '<label class="chk"><input type="checkbox"' + (store('fsp-checkin-off') === '1' ? '' : ' checked') + ' onchange="store(\'fsp-checkin-off\', this.checked ? null : \'1\')"> Ask “did you get paid today?” on paydays</label>';
+  if (MODE === 'phone') h += '<button class="btn block" style="margin-top:18px" ' + on(function () {
+    if (!confirm('Disconnect this phone from your sheet?')) return; store(CONN, null); store(CACHE, null); history.replaceState(null, '', location.pathname); D = null; closeSheet(); setupScreen(); }) + '>Disconnect this phone</button>';
+  h += '<div class="muted" style="margin-top:14px">Updated ' + esc(D.updated) + (MODE === 'mock' ? ' · sample data' : '') + '</div>';
+  openSheet(h);
+}
+
 // ---------- screens ----------
 function screenHome() {
   var st = nwStats(), mi = latestMonthWithData(), m = D.monthly[mi], h = '';
   var qs = D.assistant.questions.length;
   if (qs) h += '<button class="alert" ' + on(function () { go('paydays'); }) + '><span>' + qs + ' payday question' + (qs > 1 ? 's' : '') + ' need' + (qs > 1 ? '' : 's') + ' you</span>›</button>';
-  if (st) {
-    h += '<div class="card"><div class="label">Net worth · ' + D.months[st.i] + '</div><div class="hero">' + money(st.cur) + '</div>';
-    if (st.change != null) h += '<div class="delta ' + (st.change >= 0 ? 'up' : 'down') + '">' + (st.change >= 0 ? '▲ ' : '▼ ') + money(Math.abs(st.change)) + ' (' + pct(Math.abs(st.pct), 1) + ') vs ' + D.months[st.i - 1] + '</div>';
-    var tot = st.cash + st.inv || 1;
-    h += '<div class="split"><div style="width:' + (st.cash / tot * 100) + '%;background:var(--s1)"></div><div style="width:' + (st.inv / tot * 100) + '%;background:var(--s2)"></div></div>';
-    h += '<div class="row sub"><span><i class="sw" style="background:var(--s1)"></i>Cash ' + money(st.cash, 0) + '</span><span><i class="sw" style="background:var(--s2)"></i>Investments ' + money(st.inv, 0) + '</span></div>';
-    h += '<div class="chart" id="homeNw"></div></div>';
-  }
+  if (st) h += '<div class="card">' + nwHero(true) + '<div class="chart" id="homeNw"></div>' +
+    (nwMode === 'est' && nwEstimate() ? legend([['Entries', 'var(--accent)'], ['Estimate', '', true]]) : '') + '</div>';
   h += '<div class="section">' + D.monthly[mi].name + '</div><div class="grid2">' +
     '<div class="card"><div class="label">Income</div><div class="big">' + money(m.income, 0) + '</div></div>' +
     '<div class="card"><div class="label">Spent</div><div class="big">' + money(m.expenses, 0) + '</div></div></div>';
-  var ov = D.overview, ytd = incomeYTD();
-  if (ov && ov.yearGoal) {
-    var doy = (Date.parse(D.today) - Date.parse(D.today.slice(0, 4) + '-01-01')) / 864e5 + 1, pace = ytd / doy * 365;
-    h += '<div class="card"><div class="row"><div class="label">Income this year</div><div class="muted">goal ' + money(ov.yearGoal, 0) + '</div></div>' +
-      '<div class="big">' + money(ytd, 0) + ' <span class="sub" style="font-weight:400">· ' + pct(ytd / ov.yearGoal) + '</span></div>' +
-      '<div class="bar"><div style="width:' + Math.min(100, ytd / ov.yearGoal * 100) + '%;background:var(--s1)"></div><div class="goal" style="left:' + Math.min(99.5, doy / 365 * 100) + '%"></div></div>' +
-      '<div class="muted" style="margin-top:8px">On pace for ' + money(pace, 0) + ' · the line marks today</div></div>';
+  var ytd = incomeYTD(), g = goals();
+  if (g.goal) {
+    var doy = (Date.parse(D.today) - Date.parse(D.today.slice(0, 4) + '-01-01')) / 864e5 + 1, pace = ytd / doy * 365, hit = reachedMonth(g.base);
+    h += '<div class="card" style="cursor:pointer" ' + on(openGoal) + '><div class="row"><div class="label">Income this year</div><div class="muted">' + (g.custom ? 'your goal ' : 'goal ') + money(g.goal, 0) + ' ›</div></div>' +
+      '<div class="big">' + money(ytd, 0) + ' <span class="sub" style="font-weight:400">· ' + pct(ytd / g.goal) + '</span></div>' +
+      '<div class="bar"><div style="width:' + Math.min(100, ytd / g.goal * 100) + '%;background:' + (ytd >= g.goal ? 'var(--good)' : 'var(--s1)') + '"></div><div class="goal" style="left:' + Math.min(99.5, doy / 365 * 100) + '%"></div></div>' +
+      (g.custom && g.base ? '<div class="sub" style="margin-top:8px">' + (hit != null ? '✓ First goal ' + money(g.base, 0) + ' reached in ' + D.monthly[hit].name : 'First goal ' + money(g.base, 0) + ': ' + pct(ytd / g.base)) + '</div>' : '') +
+      '<div class="muted" style="margin-top:6px">On pace for ' + money(pace, 0) + ' · the line marks today' +
+      (!g.custom && ytd >= g.base ? ' · <b style="color:var(--accent)">Goal hit — tap to set a new one</b>' : '') + '</div></div>';
   }
   var sch = D.assistant.schedules.filter(function (s) { return s.next; }).sort(function (a, b) { return a.next < b.next ? -1 : a.next > b.next ? 1 : 0; });
   if (sch.length) {
     var soon = sch.filter(function (s) { return s.next === sch[0].next; });
-    h += '<div class="card"><div class="label">Next payday</div><div class="big">' + esc(sch[0].nextLabel) + '</div><div class="sub">' + soon.map(function (s) { return esc(s.source); }).join(' & ') + '</div></div>';
+    var paid = sch[0].next === D.today && soon.every(function (s) { return D.assistant.timeline.some(function (t) { return t.kind === 'income' && t.name === s.source && t.date === D.today; }); });
+    h += '<div class="card"><div class="label">Next payday</div><div class="big">' + (sch[0].next === D.today ? 'Today' + (paid ? ' · paid ✓' : '') : esc(sch[0].nextLabel)) + '</div><div class="sub">' + soon.map(function (s) { return esc(s.source); }).join(' & ') + '</div></div>';
   }
   return h;
 }
-function afterHome() { var nw = D.netWorth; if (nw) lineChart('homeNw', D.months, [{ name: 'Net worth', color: 'var(--accent)', values: nw.total, fill: true }], { height: 120 }); }
+function afterHome() {
+  var nw = D.netWorth; if (!nw) return;
+  var e = nwMode === 'est' ? nwEstimate() : null, series = [{ name: 'Net worth', color: 'var(--accent)', values: nw.total, fill: true }];
+  if (e) series.push({ name: 'Estimate', color: 'var(--accent)', values: estLine(nw.total[e.i], e.total, e), dash: true });
+  lineChart('homeNw', D.months, series, { height: 130, tipLabels: tipMonths(e) });
+}
 
 function screenIncome() {
   var h = '', ytd = incomeYTD(), ov = D.overview;
@@ -488,8 +1288,10 @@ function screenIncome() {
     '<button class="' + (incomeView === 'ytd' ? 'on' : '') + '" ' + on(function () { incomeView = 'ytd'; render(); }) + '>Year to date</button>' +
     '<button class="' + (incomeView === 'month' ? 'on' : '') + '" ' + on(function () { incomeView = 'month'; render(); }) + '>Monthly</button></div></div>' +
     '<div class="hero" style="margin-top:8px">' + money(ytd) + '</div>';
-  if (ov && ov.yearGoal) h += '<div class="sub">' + pct(ytd / ov.yearGoal) + ' of your ' + money(ov.yearGoal, 0) + ' goal</div>';
-  h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && ov && ov.quarters.length ? legend([['Earned', 'var(--s1)'], ['Goal pace', '', true]]) : '') + '</div>';
+  var g = goals();
+  if (g.goal) h += '<div class="sub">' + pct(ytd / g.goal) + ' of your ' + money(g.goal, 0) + ' goal' + (g.custom && g.base && ytd >= g.base ? ' · first goal ' + money(g.base, 0) + ' ✓' : '') +
+    ' · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); openGoal(); }) + '>change</a></div>';
+  h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && g.goal ? legend([['Earned', 'var(--s1)'], ['Pace for ' + money(g.goal, 0), '', true]]) : '') + '</div>';
   h += '<div class="card"><div class="label">By source</div>';
   h += srcs.length ? '<div class="list">' + srcs.map(function (s) {
     var cnt = D.monthly.reduce(function (c, m) { return c + (m.bySource[s] ? 1 : 0); }, 0), sc = schedFor(s);
@@ -499,10 +1301,10 @@ function screenIncome() {
   }).join('') + '</div>' : '<div class="empty">No income entered yet</div>';
   h += '</div>';
   if (ov && ov.quarters.length) {
-    h += '<div class="card"><div class="label">Quarterly goals</div><div class="list">';
+    h += '<div class="card"><div class="label">Quarterly goals' + (goals().custom ? ' · scaled to ' + money(goals().goal, 0) : '') + '</div><div class="list">';
     var qa = [0, 1, 2, 3].map(function (q) { return sum(D.monthly.slice(q * 3, q * 3 + 3).map(function (m) { return m.income; })); });
-    ov.quarters.forEach(function (q, i) { var a = qa[i] || 0, p = q.goal ? a / q.goal : 0;
-      h += '<div class="item"><div class="row"><span>' + q.label + '</span><span class="num">' + money(a, 0) + ' <span class="muted">/ ' + money(q.goal, 0) + '</span></span></div>' +
+    ov.quarters.forEach(function (q, i) { var a = qa[i] || 0, qg = q.goal * goals().scale, p = qg ? a / qg : 0;
+      h += '<div class="item"><div class="row"><span>' + q.label + '</span><span class="num">' + money(a, 0) + ' <span class="muted">/ ' + money(qg, 0) + '</span></span></div>' +
         '<div class="bar"><div style="width:' + Math.min(100, p * 100) + '%;background:' + (p >= 1 ? 'var(--good)' : 'var(--s1)') + '"></div></div>' +
         '<div class="muted" style="margin-top:4px">' + (p >= 1 ? '✓ Goal hit' : pct(p) + ' of goal') + '</div></div>'; });
     h += '</div></div>';
@@ -515,7 +1317,8 @@ function afterIncome() {
   var last = latestMonthWithData(), run = 0, cum = D.monthly.map(function (m, i) { run += m.income; return i <= last ? run : null; });
   var series = [{ name: 'Earned', color: 'var(--s1)', values: cum, fill: true }];
   var ov = D.overview;
-  if (ov && ov.quarters.length) { var g = 0, goal = D.monthly.map(function (m, i) { var q = ov.quarters[Math.floor(i / 3)]; g += (q ? q.goal : 0) / 3; return g; });
+  var G = goals();
+  if (G.goal) { var g = 0, goal = D.monthly.map(function (m, i) { var q = ov && ov.quarters[Math.floor(i / 3)]; g += q && G.base ? q.goal * G.scale / 3 : G.goal / 12; return g; });
     series.push({ name: 'Goal pace', color: 'var(--muted)', values: goal, dash: true }); }
   lineChart('incChart', D.months, series, { zero: true, height: 190, tipLabels: names.map(function (n) { return 'Through ' + n; }) });
 }
@@ -523,10 +1326,9 @@ function afterIncome() {
 function screenNetWorth() {
   var st = nwStats(), nw = D.netWorth, h = '';
   if (!st) return '<div class="card empty">Fill in the Net Worth tab to see this.</div>';
-  h += '<div class="card"><div class="label">Net worth · ' + D.months[st.i] + '</div><div class="hero">' + money(st.cur) + '</div>';
-  if (st.change != null) h += '<div class="delta ' + (st.change >= 0 ? 'up' : 'down') + '">' + (st.change >= 0 ? '▲ ' : '▼ ') + money(Math.abs(st.change)) + ' this month · ' +
-    (st.cur - st.ytdStart >= 0 ? '+' : '−') + money(Math.abs(st.cur - st.ytdStart), 0) + ' (' + pct(Math.abs(st.cur - st.ytdStart) / st.ytdStart, 0) + ') since Jan</div>';
-  h += '<div class="chart" id="nwLine"></div>' + legend([['Cash', 'var(--s1)'], ['Investments', 'var(--s2)']]) + '</div>';
+  var e = nwMode === 'est' ? nwEstimate() : null;
+  h += '<div class="card">' + nwHero(false) + '<div class="chart" id="nwLine"></div>' + legend([['Cash', 'var(--s1)'], ['Investments', 'var(--s2)']].concat(e ? [['Estimate', '', true]] : [])) + '</div>';
+  if (e) h += estimateCard(e, st);
 
   // Month Change / NW % Change rows
   var changes = nw.total.map(function (v, i) { return i > 0 && v != null && nw.total[i - 1] != null ? v - nw.total[i - 1] : null; });
@@ -560,27 +1362,33 @@ function screenNetWorth() {
   }).join('') + '</div>';
 
   // Future Networth
-  if (!proj) proj = { rate: 7, add: 0 };
+  if (!proj) proj = { rate: 7, addInv: 0, addCash: 0 };
+  var avgInv = Math.round(st.contributionsYTD / (st.i + 1) / 25) * 25;
   h += '<div class="section">Future net worth</div><div class="card"><div class="label">Projected</div>' +
     '<div class="big" id="projBig"></div><div class="chart" id="projChart"></div>' +
     '<label class="field"><span>Yearly return · <b id="rateV">' + proj.rate + '%</b></span><input type="range" min="0" max="12" step="0.5" value="' + proj.rate + '" oninput="proj.rate=+this.value;drawProj()"></label>' +
-    '<label class="field"><span>Add each month · <b id="addV">' + money(proj.add, 0) + '</b></span><input type="range" min="0" max="2000" step="50" value="' + proj.add + '" oninput="proj.add=+this.value;drawProj()"></label>' +
+    '<label class="field"><span>Invest each month · <b id="addInvV">' + money(proj.addInv, 0) + '</b></span><input type="range" min="0" max="2000" step="25" id="addInvR" value="' + proj.addInv + '" oninput="proj.addInv=+this.value;drawProj()"></label>' +
+    (avgInv ? '<div class="muted">You’ve averaged ' + money(avgInv, 0) + '/mo to investing this year · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); proj.addInv = avgInv; document.getElementById('addInvR').value = avgInv; drawProj(); }) + '>use it</a></div>' : '') +
+    '<label class="field"><span>Save to cash each month · <b id="addCashV">' + money(proj.addCash, 0) + '</b></span><input type="range" min="0" max="2000" step="25" value="' + proj.addCash + '" oninput="proj.addCash=+this.value;drawProj()"></label>' +
     '<div class="label" style="margin-top:16px">Milestones</div><div class="list" id="milestones"></div>' +
-    '<div class="muted" style="margin-top:8px">At 7% with $0 added this matches the Future Networth row in your sheet: investments grow, cash stays put.</div></div>';
+    '<div class="muted" style="margin-top:8px">Investments grow at the yearly return; cash doesn’t grow. ' +
+    (nwMode === 'est' && nwEstimate() ? 'Starts from today’s estimate.' : 'Starts from your ' + monthEndLabel(st.i) + ' entry — at 7% with $0 added it matches the Future Networth row in your sheet.') + '</div></div>';
   return h;
 }
 function projSeries() {
-  var st = nwStats(), y0 = +D.today.slice(0, 4), out = [];
+  var st = nwStats(), e = nwMode === 'est' ? nwEstimate() : null, inv0 = e ? e.inv : st.inv, cash0 = e ? e.cash : st.cash;
+  var y0 = +D.today.slice(0, 4), out = [], r = proj.rate / 100, mi = proj.addInv * 12;
   for (var t = 0; t <= 50; t++) {
-    var r = proj.rate / 100, m = proj.add * 12, contrib = r ? m * (Math.pow(1 + r, t) - 1) / r : m * t;
-    out.push({ year: y0 + t, value: st.inv * Math.pow(1 + r, t) + contrib + st.cash });
+    var contrib = r ? mi * (Math.pow(1 + r, t) - 1) / r : mi * t;
+    out.push({ year: y0 + t, value: inv0 * Math.pow(1 + r, t) + contrib + cash0 + proj.addCash * 12 * t });
   }
   return out;
 }
 function drawProj() {
   var s = projSeries();
   document.getElementById('rateV').textContent = proj.rate + '%';
-  document.getElementById('addV').textContent = money(proj.add, 0);
+  document.getElementById('addInvV').textContent = money(proj.addInv, 0);
+  document.getElementById('addCashV').textContent = money(proj.addCash, 0);
   document.getElementById('projBig').innerHTML = money(s[30].value, 0) + ' <span class="sub" style="font-weight:400">in ' + s[30].year + ' (30 years)</span>';
   var show = s.slice(0, 41);
   lineChart('projChart', show.map(function (p) { return String(p.year); }), [{ name: 'Projected', color: 'var(--accent)', values: show.map(function (p) { return p.value; }), fill: true }],
@@ -597,7 +1405,10 @@ function afterNetWorth() {
   for (var i = 0; i < 12; i++) { var c = null, v = null;
     nw.accounts.forEach(function (a) { if (a.values[i] == null) return; if (a.type === 'cash') c = (c || 0) + a.values[i]; else v = (v || 0) + a.values[i]; });
     cash.push(c); inv.push(v); }
-  lineChart('nwLine', D.months, [{ name: 'Cash', color: 'var(--s1)', values: cash }, { name: 'Investments', color: 'var(--s2)', values: inv }], { zero: true, height: 190 });
+  var e = nwMode === 'est' ? nwEstimate() : null, ser = [{ name: 'Cash', color: 'var(--s1)', values: cash }, { name: 'Investments', color: 'var(--s2)', values: inv }];
+  if (e) { ser.push({ name: 'Cash est.', color: 'var(--s1)', values: estLine(cash[e.i], e.cash, e), dash: true });
+    ser.push({ name: 'Investments est.', color: 'var(--s2)', values: estLine(inv[e.i], e.inv, e), dash: true }); }
+  lineChart('nwLine', D.months, ser, { zero: true, height: 190, tipLabels: tipMonths(e) });
   var changes = nw.total.map(function (v, i) { return i > 0 && v != null && nw.total[i - 1] != null ? v - nw.total[i - 1] : null; });
   barChart('nwChange', D.months, [{ name: 'Change', values: changes }], { signed: true, height: 140, tipLabels: D.monthly.map(function (m) { return m.name; }) });
   drawProj();
@@ -646,7 +1457,7 @@ function qCard(q) {
   var sel = picks[q.id] || (q.type === 'holiday' ? q.expected : null);
   var days = q.options.map(function (o) { return '<button class="btn' + (sel === o.date ? ' sel' : '') + '" ' + on(function () { picks[q.id] = o.date; render(); }) + '>' + esc(o.label) + '</button>'; }).join('');
   var dis = sel ? '' : ' disabled';
-  function answer(mode) { return on(function () { assistant('answerQuestion', [q.id, { date: sel, mode: mode }]); }); }
+  function answer(mode) { return on(function () { act('answerQuestion', [q.id, { date: sel, mode: mode }], null, dropQ(q.id)); }); }
   if (q.type === 'holiday') {
     return '<div class="card q off"><div class="t">' + esc(q.holiday) + ' payday · ' + esc(q.source) + ' <span class="muted">' + money(q.amount) + '</span></div><div class="muted">' + where + '</div>' +
       '<div class="sub" style="margin-top:8px">Payday would be <b>' + esc(q.expectedLabel) + '</b>, which is ' + esc(q.holiday) + '. Were you paid that day, or early/late?</div>' +
@@ -666,7 +1477,7 @@ function qCard(q) {
     '<button class="btn block"' + dis + ' ' + answer('irregular') + '>Irregular — just this once</button>' +
     '<button class="btn primary block"' + dis + ' ' + answer('changing') + '>My payday is changing to this day</button></div>';
 }
-function ansOrder(q, first) { var all = document.getElementById('all-' + q.id); assistant('answerQuestion', [q.id, { first: first, scope: all && all.checked ? 'all' : 'pair' }]); }
+function ansOrder(q, first) { var all = document.getElementById('all-' + q.id); act('answerQuestion', [q.id, { first: first, scope: all && all.checked ? 'all' : 'pair' }], null, dropQ(q.id)); }
 
 function screenPaydays() {
   var A = D.assistant, h = '';
@@ -707,10 +1518,11 @@ function go(t) { tab = t; store('fsp-tab', t); render(); document.getElementById
 function render() {
   if (!D) return;
   if (!SCREENS[tab]) tab = 'home';
-  REG = [];
+  resetHandlers();
   var titles = { home: 'Overview', income: 'Income', networth: 'Net Worth', spending: 'Spending', paydays: 'Paydays' };
   var body = SCREENS[tab][0]();
-  document.getElementById('app').innerHTML = '<header><h1>' + titles[tab] + '</h1><div class="hbtns"><button class="pillbtn" id="refresh" onclick="load(true)">↻</button>' +
+  document.getElementById('app').innerHTML = '<header><h1>' + titles[tab] + '</h1><div class="hbtns"><button class="pillbtn" id="refresh" onclick="load(true)" aria-label="Refresh">↻</button>' +
+    '<button class="pillbtn" aria-label="Settings" ' + on(openSettings) + '><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>' +
     '<button class="addbtn" ' + on(function () { addState = null; openAddIncome(); }) + '>+ Income</button></div></header>' +
     (D.sample ? '<div class="sample">Sample data — this demo isn\'t connected to your sheet</div>' : '') + body +
     '<div class="muted" style="text-align:center;margin-top:8px">Updated ' + esc(D.updated) + '</div>';
