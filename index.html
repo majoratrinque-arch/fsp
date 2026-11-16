@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <base target="_top">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FSP">
-<meta name="theme-color" content="#f4f3ef" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0f0f0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#1f6b4a" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12241a" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-180.png">
@@ -21,7 +21,7 @@
     --accent:#1f6b4a; --accent-soft:#e3f1ea; --on-accent:#ffffff;
     --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s-other:#a9a8a2;
     --good:#1f7a3a; --bad:#c23b3a; --warn:#9a5b00; --warn-soft:#fdf3e2;
-    --bar:rgba(244,243,239,.88); --shade:rgba(0,0,0,.35);
+    --bar:rgba(244,243,239,.88); --shade:rgba(0,0,0,.35); --head:#1f6b4a;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -30,7 +30,7 @@
       --accent:#5cc492; --accent-soft:#17301f; --on-accent:#08130d;
       --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s-other:#6d6c67;
       --good:#5cc47a; --bad:#ef7a79; --warn:#f0b35a; --warn-soft:#2d2210;
-      --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6);
+      --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6); --head:#12241a;
     }
   }
   :root[data-theme="dark"] {
@@ -39,20 +39,24 @@
     --accent:#5cc492; --accent-soft:#17301f; --on-accent:#08130d;
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s-other:#6d6c67;
     --good:#5cc47a; --bad:#ef7a79; --warn:#f0b35a; --warn-soft:#2d2210;
-    --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6);
+    --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6); --head:#12241a;
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   /* App shell: the page itself never scrolls or bounces; only the content area does. */
-  html, body { margin:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--ink); }
+  html, body { margin:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--ink); touch-action:manipulation; -webkit-text-size-adjust:100%; }
   body { font:15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing:antialiased;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   input, textarea { -webkit-user-select:text; user-select:text; }
-  #scroller { position:fixed; top:0; left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 58px); overflow-y:auto; overflow-x:hidden;
-    -webkit-overflow-scrolling:touch; overscroll-behavior-y:contain; }
-  .wrap { max-width:520px; margin:0 auto; padding:0 16px 24px; }
-  header { position:sticky; top:0; z-index:4; background:var(--bar); -webkit-backdrop-filter:saturate(1.6) blur(18px); backdrop-filter:saturate(1.6) blur(18px);
-    margin:0 -16px 12px; padding:calc(env(safe-area-inset-top) + 10px) 16px 10px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
-  header h1 { font-size:28px; letter-spacing:-.02em; margin:0; }
+  input, select, textarea, input.btn { font-size:16px; } /* under 16px makes iPhone zoom in */
+  /* Fixed top bar that sits under the iPhone status bar, like a native app. */
+  #top { position:fixed; top:0; left:0; right:0; z-index:6; background:var(--head); color:#fff; padding:env(safe-area-inset-top) 16px 0; }
+  #top header { max-width:520px; margin:0 auto; height:56px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  #top h1 { font-size:26px; letter-spacing:-.02em; margin:0; color:#fff; }
+  #top .pillbtn { background:rgba(255,255,255,.16); color:#fff; box-shadow:none; }
+  #top .addbtn { background:#fff; color:#1f6b4a; }
+  #scroller { position:fixed; top:calc(env(safe-area-inset-top) + 56px); left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 58px); overflow-y:auto; overflow-x:hidden;
+    -webkit-overflow-scrolling:touch; overscroll-behavior:none; }
+  .wrap { max-width:520px; margin:0 auto; padding:14px 16px 24px; }
   .hbtns { display:flex; gap:8px; align-items:center; }
   .pillbtn { border:0; background:var(--card); color:var(--ink2); border-radius:99px; padding:7px 12px; font:inherit; font-size:13px; box-shadow:0 0 0 1px var(--line); }
   .addbtn { border:0; background:var(--accent); color:var(--on-accent); border-radius:99px; padding:7px 13px; font:inherit; font-size:14px; font-weight:650; }
@@ -143,11 +147,12 @@
   #sheet .grab { width:38px; height:5px; border-radius:3px; background:var(--line); margin:2px auto 10px; }
   #sheet .in { max-width:520px; margin:0 auto; }
   #sheet h2 { font-size:20px; margin:0 0 4px; }
-  .toast { position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 72px); transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:99px; font-size:14px; z-index:30; opacity:0; transition:opacity .2s; pointer-events:none; white-space:nowrap; }
+  .toast { position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 72px); transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:18px; font-size:14px; z-index:30; opacity:0; transition:opacity .2s; pointer-events:none; max-width:calc(100% - 32px); width:max-content; text-align:center; }
   .toast.on { opacity:1; }
 </style>
 </head>
 <body>
+<div id="top"><header><h1>FSP</h1></header></div>
 <div id="scroller"><div class="wrap" id="app"><div class="loading">Loading your spreadsheet…</div></div></div>
 <nav><div class="in" id="nav"></div></nav>
 <div id="shade" onclick="closeSheet()"></div>
@@ -754,7 +759,7 @@ if (typeof module !== 'undefined') module.exports = FSP;
   function dashboard() {
     var a = FSP.resolve(model, state); a.year = Y;
     return {
-      sample: true, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
+      sample: true, apiVersion: 4, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
       netWorth: { accounts: [{ name: 'Chase', type: 'cash', values: nwVals.chase }, { name: 'Fidelity (Rounds)', type: 'investments', values: nwVals.fid }],
         total: nwVals.chase.map(function (v, i) { return v == null ? null : v + nwVals.fid[i]; }), contributions: nwVals.contrib, dividends: nwVals.div, investPct: nwVals.pct, lastMonth: 8 },
       overview: { quarters: [{ label: 'Q1', goal: 689.01 }, { label: 'Q2', goal: 964.62 }, { label: 'Q3', goal: 3215.39 }, { label: 'Q4', goal: 1929.23 }], yearGoal: 6798.25,
@@ -810,7 +815,9 @@ if (typeof module !== 'undefined') module.exports = FSP;
 </script>
 <script>
 // ---------- connection: inside Google (google.script.run), demo mock, or home-screen app (private key) ----------
-var CONN = 'fsp-connection-v1', CACHE;
+var CONN = 'fsp-connection-v1', CACHE, NEED_API = 4;
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) { document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false }); });
+document.addEventListener('touchmove', function (e) { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
 function readLinkFromHash() {
   var m = location.hash.match(/api=([^&]+)&key=([0-9a-f]+)/i);
@@ -860,7 +867,7 @@ function resetHandlers() { var keep = {};
   document.querySelectorAll('#sheet [onclick]').forEach(function (el) { var m = (el.getAttribute('onclick') || '').match(/R\((\d+)/); if (m && REG[m[1]]) keep[m[1]] = REG[m[1]]; });
   REG = keep; }
 
-function toast(msg) { var t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { t.classList.remove('on'); }, 2200); }
+function toast(msg, ms) { var t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { t.classList.remove('on'); }, ms || 2200); }
 
 // Fixed color by entity (never by rank)
 var CAT_ORDER = ['Investment', 'Spending', 'Savings', 'Big Purchases'];
@@ -890,7 +897,7 @@ function act(fn, args, after, optimistic) {
       PENDING.splice(PENDING.indexOf(op), 1);
       D = res; PENDING.forEach(function (p) { if (p.optimistic) p.optimistic(D); });
       picks = {}; store(CACHE, JSON.stringify(D)); if (!optimistic) closeSheet(); render(); if (after) after(); done();
-    }, function (e) { PENDING.splice(PENDING.indexOf(op), 1); toast(e); if (optimistic) load(true); done(); });
+    }, function (e) { PENDING.splice(PENDING.indexOf(op), 1); toast(/Unknown action/.test(e) ? 'Not saved: update your Google script (Deploy → New version)' : 'Not saved: ' + e, 6000); if (optimistic) load(true); done(); });
   }); });
 }
 function assistant(fn, args, after) { act(fn, args, after); }
@@ -899,7 +906,8 @@ function dropQ(id) { return function (d) { d.assistant.questions = d.assistant.q
 function setupScreen() {
   document.getElementById('nav').innerHTML = '';
   resetHandlers();
-  var h = '<header><h1>Connect</h1></header><div class="card"><div style="font-weight:650;font-size:17px;margin-bottom:6px">Link this app to your sheet</div>' +
+  document.getElementById('top').innerHTML = '<header><h1>Connect</h1></header>';
+  var h = '<div class="card"><div style="font-weight:650;font-size:17px;margin-bottom:6px">Link this app to your sheet</div>' +
     '<div class="sub">On a computer, open your FSP Google Sheet and choose <b>FSP Assistant → Connect my iPhone app</b>. Scan the QR code with your iPhone camera and open it in Safari, then tap <b>Share → Add to Home Screen</b>.</div>' +
     '<label class="field"><span>Or paste the link here</span><input class="input" id="paste" placeholder="https://…#api=…&key=…" autocapitalize="off" autocorrect="off"></label>' +
     '<button class="btn primary block" ' + on(function () {
@@ -1306,7 +1314,7 @@ function screenIncome() {
     ov.quarters.forEach(function (q, i) { var a = qa[i] || 0, qg = q.goal * goals().scale, p = qg ? a / qg : 0;
       h += '<div class="item"><div class="row"><span>' + q.label + '</span><span class="num">' + money(a, 0) + ' <span class="muted">/ ' + money(qg, 0) + '</span></span></div>' +
         '<div class="bar"><div style="width:' + Math.min(100, p * 100) + '%;background:' + (p >= 1 ? 'var(--good)' : 'var(--s1)') + '"></div></div>' +
-        '<div class="muted" style="margin-top:4px">' + (p >= 1 ? '✓ Goal hit' : pct(p) + ' of goal') + '</div></div>'; });
+        '<div class="muted" style="margin-top:4px">' + (p >= 1 ? '✓ Goal hit' : pct(p) + ' of goal') + (goals().custom ? ' · sheet’s target ' + money(q.goal, 0) : '') + '</div></div>'; });
     h += '</div></div>';
   }
   return h;
@@ -1521,9 +1529,10 @@ function render() {
   resetHandlers();
   var titles = { home: 'Overview', income: 'Income', networth: 'Net Worth', spending: 'Spending', paydays: 'Paydays' };
   var body = SCREENS[tab][0]();
-  document.getElementById('app').innerHTML = '<header><h1>' + titles[tab] + '</h1><div class="hbtns"><button class="pillbtn" id="refresh" onclick="load(true)" aria-label="Refresh">↻</button>' +
+  document.getElementById('top').innerHTML = '<header><h1>' + titles[tab] + '</h1><div class="hbtns"><button class="pillbtn" id="refresh" onclick="load(true)" aria-label="Refresh">↻</button>' +
     '<button class="pillbtn" aria-label="Settings" ' + on(openSettings) + '><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>' +
-    '<button class="addbtn" ' + on(function () { addState = null; openAddIncome(); }) + '>+ Income</button></div></header>' +
+    '<button class="addbtn" ' + on(function () { addState = null; openAddIncome(); }) + '>+ Income</button></div></header>';
+  document.getElementById('app').innerHTML = (MODE === 'phone' && !(D.apiVersion >= NEED_API) ? '<div class="alert" style="font-weight:500"><span><b>Your Google script is out of date</b>, so some things (like your goal) won\'t save. In Apps Script, paste in the new Code, Engine, Dashboard and App files, then Deploy → Manage deployments → ✏️ → Version: <b>New version</b> → Deploy.</span></div>' : '') +
     (D.sample ? '<div class="sample">Sample data — this demo isn\'t connected to your sheet</div>' : '') + body +
     '<div class="muted" style="text-align:center;margin-top:8px">Updated ' + esc(D.updated) + '</div>';
   if (SCREENS[tab][1]) SCREENS[tab][1]();
