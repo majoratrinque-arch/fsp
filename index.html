@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<base target="_top">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="FSP">
+<meta name="theme-color" content="#f4f3ef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0e" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-180.png">
+<title>FSP</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg:#f4f3ef; --card:#ffffff; --ink:#0b0b0b; --ink2:#52514e; --muted:#8a8984; --line:#e6e4de; --grid:#eeece7;
+    --accent:#1f6b4a; --accent-soft:#e3f1ea; --on-accent:#ffffff;
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s-other:#a9a8a2;
+    --good:#1f7a3a; --bad:#c23b3a; --warn:#9a5b00; --warn-soft:#fdf3e2;
+    --bar:rgba(244,243,239,.88); --shade:rgba(0,0,0,.35);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg:#0f0f0e; --card:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86; --line:#2c2c2a; --grid:#262624;
+      --accent:#5cc492; --accent-soft:#17301f; --on-accent:#08130d;
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s-other:#6d6c67;
+      --good:#5cc47a; --bad:#ef7a79; --warn:#f0b35a; --warn-soft:#2d2210;
+      --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#0f0f0e; --card:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86; --line:#2c2c2a; --grid:#262624;
+    --accent:#5cc492; --accent-soft:#17301f; --on-accent:#08130d;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s-other:#6d6c67;
+    --good:#5cc47a; --bad:#ef7a79; --warn:#f0b35a; --warn-soft:#2d2210;
+    --bar:rgba(15,15,14,.88); --shade:rgba(0,0,0,.6);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  /* App shell: the page itself never scrolls or bounces; only the content area does. */
+  html, body { margin:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--ink); }
+  body { font:15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing:antialiased;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  input, textarea { -webkit-user-select:text; user-select:text; }
+  #scroller { position:fixed; top:0; left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 58px); overflow-y:auto; overflow-x:hidden;
+    -webkit-overflow-scrolling:touch; overscroll-behavior-y:contain; }
+  .wrap { max-width:520px; margin:0 auto; padding:0 16px 24px; }
+  header { position:sticky; top:0; z-index:4; background:var(--bar); -webkit-backdrop-filter:saturate(1.6) blur(18px); backdrop-filter:saturate(1.6) blur(18px);
+    margin:0 -16px 12px; padding:calc(env(safe-area-inset-top) + 10px) 16px 10px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  header h1 { font-size:28px; letter-spacing:-.02em; margin:0; }
+  .hbtns { display:flex; gap:8px; align-items:center; }
+  .pillbtn { border:0; background:var(--card); color:var(--ink2); border-radius:99px; padding:7px 12px; font:inherit; font-size:13px; box-shadow:0 0 0 1px var(--line); }
+  .addbtn { border:0; background:var(--accent); color:var(--on-accent); border-radius:99px; padding:7px 13px; font:inherit; font-size:14px; font-weight:650; }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin-bottom:12px; box-shadow:0 0 0 1px var(--line); }
+  .label { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; margin-bottom:6px; }
+  .section { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; margin:20px 2px 8px; }
+  .hero { font-size:38px; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums; line-height:1.1; }
+  .big { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+  .delta { font-size:14px; font-weight:600; margin-top:4px; }
+  .up { color:var(--good); } .down { color:var(--bad); }
+  .sub { color:var(--ink2); font-size:13px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+  .grid2 .card { margin-bottom:0; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .list > .row, .list > .item { padding:10px 0; border-top:1px solid var(--line); }
+  .list > :first-child { border-top:0; padding-top:2px; }
+  .num { font-variant-numeric:tabular-nums; font-weight:600; }
+  .split { display:flex; height:10px; border-radius:6px; overflow:hidden; gap:2px; margin:12px 0 8px; }
+  .split > div { height:100%; }
+  .key { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:13px; color:var(--ink2); }
+  .key i, .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+  .key i.dash { height:0; border-top:2px dashed var(--muted); border-radius:0; width:14px; vertical-align:3px; }
+  .bar { height:8px; background:var(--grid); border-radius:6px; overflow:hidden; margin-top:6px; position:relative; }
+  .bar > div { height:100%; border-radius:6px; }
+  .bar .goal { position:absolute; top:0; bottom:0; width:2px; background:var(--ink); border-radius:1px; }
+  .chips { display:flex; gap:6px; overflow-x:auto; margin:0 -16px 12px; padding:0 16px; scrollbar-width:none; }
+  .chips::-webkit-scrollbar { display:none; }
+  .chip { flex:none; border:0; background:var(--card); box-shadow:0 0 0 1px var(--line); color:var(--ink2); border-radius:99px; padding:7px 13px; font:inherit; font-size:14px; }
+  .chip.on { background:var(--ink); color:var(--bg); box-shadow:none; }
+  .seg { display:inline-flex; background:var(--grid); border-radius:9px; padding:2px; }
+  .seg button { border:0; background:none; font:inherit; font-size:13px; color:var(--ink2); padding:5px 10px; border-radius:7px; }
+  .seg button.on { background:var(--card); color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.12); font-weight:600; }
+  .chart { position:relative; margin-top:10px; touch-action:pan-y; }
+  .chart svg { display:block; width:100%; overflow:visible; }
+  .chart text { fill:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .tip { position:absolute; pointer-events:none; background:var(--ink); color:var(--bg); border-radius:8px; padding:6px 9px; font-size:12px; line-height:1.35; white-space:nowrap; transform:translate(-50%, -100%); top:0; opacity:0; transition:opacity .12s; z-index:2; }
+  .tip b { font-weight:650; }
+  .tip i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; }
+  nav { position:fixed; left:0; right:0; bottom:0; height:calc(env(safe-area-inset-bottom) + 58px); background:var(--bar);
+    -webkit-backdrop-filter:saturate(1.6) blur(18px); backdrop-filter:saturate(1.6) blur(18px); border-top:1px solid var(--line); padding:5px 4px 0; z-index:5; }
+  nav .in { max-width:520px; margin:0 auto; display:flex; }
+  nav button { flex:1; border:0; background:none; color:var(--muted); font:inherit; font-size:10.5px; font-weight:600; padding:3px 0; display:flex; flex-direction:column; align-items:center; gap:3px; position:relative; }
+  nav button.on { color:var(--accent); }
+  nav svg { width:25px; height:25px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .badge { position:absolute; top:0; left:calc(50% + 6px); background:var(--bad); color:#fff; border-radius:99px; font-size:10px; min-width:17px; height:17px; line-height:17px; padding:0 5px; }
+  .alert { display:flex; gap:10px; align-items:center; background:var(--warn-soft); color:var(--warn); border-radius:14px; padding:12px 14px; margin-bottom:12px; font-size:14px; font-weight:550; border:0; width:100%; text-align:left; font-family:inherit; }
+  .alert span { flex:1; }
+  .q { border-left:3px solid var(--accent); }
+  .q.off { border-left-color:var(--warn); }
+  .q .t { font-weight:650; font-size:16px; margin-bottom:2px; }
+  .days { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 4px; }
+  .btn { font:inherit; font-size:15px; border:0; box-shadow:0 0 0 1px var(--line); background:var(--card); color:var(--ink); border-radius:11px; padding:10px 14px; }
+  .btn.sel, .btn.primary { background:var(--accent); color:var(--on-accent); box-shadow:none; }
+  .btn.warnb { background:var(--warn-soft); color:var(--warn); box-shadow:none; }
+  .btn.block { display:block; width:100%; margin-top:8px; }
+  .btn:disabled { opacity:.4; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+  .two .btn { margin:0; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--accent-soft); color:var(--accent); font-weight:600; white-space:nowrap; }
+  .pill.low { background:var(--warn-soft); color:var(--warn); }
+  .tl { display:grid; grid-template-columns:62px 1fr auto; gap:2px 10px; padding:10px 0; border-top:1px solid var(--line); align-items:baseline; }
+  .tl:first-child { border-top:0; }
+  .tl.tap { cursor:pointer; }
+  .tl .d { color:var(--ink2); font-size:13px; font-variant-numeric:tabular-nums; }
+  .tl .s { grid-column:2 / 4; color:var(--muted); font-size:12px; }
+  .pos { color:var(--good); }
+  .empty { text-align:center; color:var(--muted); padding:22px 8px; }
+  .loading { text-align:center; padding:120px 20px 0; color:var(--muted); }
+  label.chk { display:flex; gap:10px; align-items:center; margin-top:12px; font-size:14px; color:var(--ink2); }
+  label.chk input { width:20px; height:20px; accent-color:var(--accent); flex:none; }
+  .sample { background:var(--warn-soft); color:var(--warn); font-size:12px; text-align:center; padding:6px; border-radius:10px; margin-bottom:12px; }
+  table.t { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+  table.t th { text-align:right; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.05em; padding:0 0 6px; }
+  table.t th:first-child, table.t td:first-child { text-align:left; }
+  table.t td { text-align:right; padding:7px 0; border-top:1px solid var(--line); }
+  input[type=range] { width:100%; accent-color:var(--accent); margin:6px 0 2px; }
+  .field { display:block; margin-top:14px; }
+  .field > span { display:block; font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
+  .input { width:100%; font:inherit; font-size:17px; color:var(--ink); background:var(--card); border:0; box-shadow:0 0 0 1px var(--line); border-radius:11px; padding:11px 12px; }
+  .input.money { font-size:28px; font-weight:650; }
+  /* bottom sheet */
+  #shade { position:fixed; inset:0; background:var(--shade); opacity:0; pointer-events:none; transition:opacity .2s; z-index:20; }
+  #shade.on { opacity:1; pointer-events:auto; }
+  #sheet { position:fixed; left:0; right:0; bottom:0; z-index:21; background:var(--bg); border-radius:18px 18px 0 0; max-height:88%; overflow-y:auto; overscroll-behavior:contain;
+    transform:translateY(105%); transition:transform .28s cubic-bezier(.2,.8,.2,1); padding:8px 16px calc(env(safe-area-inset-bottom) + 18px); }
+  #sheet.on { transform:none; }
+  #sheet .grab { width:38px; height:5px; border-radius:3px; background:var(--line); margin:2px auto 10px; }
+  #sheet .in { max-width:520px; margin:0 auto; }
+  #sheet h2 { font-size:20px; margin:0 0 4px; }
+  .toast { position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 72px); transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:99px; font-size:14px; z-index:30; opacity:0; transition:opacity .2s; pointer-events:none; white-space:nowrap; }
+  .toast.on { opacity:1; }
+</style>
+</head>
+<body>
+<div id="scroller"><div class="wrap" id="app"><div class="loading">Loading your spreadsheet…</div></div></div>
+<nav><div class="in" id="nav"></div></nav>
+<div id="shade" onclick="closeSheet()"></div>
+<div id="sheet"><div class="in"><div class="grab"></div><div id="sheetBody"></div></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------- connection: inside Google (google.script.run), demo mock, or home-screen app (private key) ----------
+var CONN = 'fsp-connection-v1', CACHE = 'fsp-dashboard-v1';
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
+function readLinkFromHash() {
+  var m = location.hash.match(/api=([^&]+)&key=([0-9a-f]+)/i);
+  if (m) store(CONN, JSON.stringify({ api: decodeURIComponent(m[1]), key: m[2] }));
+  return !!m;
+  // The hash stays in the address so "Add to Home Screen" keeps the connection too.
+}
+readLinkFromHash();
+window.addEventListener('hashchange', function () { if (readLinkFromHash()) load(true); });
+function connection() { try { return JSON.parse(store(CONN) || 'null'); } catch (e) { return null; } }
+var MODE = (typeof google !== 'undefined' && google.script) ? 'google' : window.FSP_MOCK_API ? 'mock' : 'phone';
+
+function call(fn, args, ok, fail) {
+  args = args || [];
+  if (MODE === 'google' || MODE === 'mock') {
+    var r = (MODE === 'google' ? google.script.run : window.FSP_MOCK_API).withSuccessHandler(ok).withFailureHandler(function (e) { fail(e.message || String(e)); });
+    r[fn].apply(r, args); return;
+  }
+  var c = connection();
+  if (!c) { fail('NOT_CONNECTED'); return; }
+  fetch(c.api, { method: 'POST', body: JSON.stringify({ key: c.key, fn: fn, args: args }), redirect: 'follow' })
+    .then(function (res) { return res.json(); })
+    .then(function (j) { if (j.ok) ok(j.result); else fail(j.error); })
+    .catch(function () { fail('Couldn\'t reach your sheet. Check your connection.'); });
+}
+
+var D = null, tab = store('fsp-tab') || 'home', spendMonth = null, tlMonth = null, picks = {}, incomeView = 'ytd', proj = null, busy = false;
+
+// ---------- formatting ----------
+function money(n, dp) { if (n == null || isNaN(n)) return '—'; var neg = n < 0; n = Math.abs(n);
+  var s = n.toLocaleString('en-US', { minimumFractionDigits: dp == null ? 2 : dp, maximumFractionDigits: dp == null ? 2 : dp }); return (neg ? '−$' : '$') + s; }
+function short(n) { var a = Math.abs(n), sg = n < 0 ? '−' : ''; if (a >= 1e6) return sg + '$' + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M'; if (a >= 1e3) return sg + '$' + (a / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k'; return sg + '$' + Math.round(a); }
+function pct(n, dp) { return (n * 100).toFixed(dp == null ? 0 : dp) + '%'; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]; }); }
+function sum(a) { return a.reduce(function (s, v) { return s + (v || 0); }, 0); }
+var WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], WDL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function dt(s) { var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
+function dlabel(s) { var d = dt(s); return WD[d.getUTCDay()] + ' ' + (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); }
+
+// Click handlers without quoting headaches: on(fn) → onclick="R(n)"
+var REG = [];
+function on(fn) { REG.push(fn); return 'onclick="R(' + (REG.length - 1) + ',event)"'; }
+function R(i, e) { if (REG[i]) REG[i](e); }
+
+function toast(msg) { var t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { t.classList.remove('on'); }, 2200); }
+
+// Fixed color by entity (never by rank)
+var CAT_ORDER = ['Investment', 'Spending', 'Savings', 'Big Purchases'];
+var CAT_COLOR = { 'Investment': '--s1', 'Spending': '--s2', 'Savings': '--s3', 'Big Purchases': '--s4' };
+function catColor(c) { return 'var(' + (CAT_COLOR[c] || '--s-other') + ')'; }
+var GOAL_KEY = { 'Invest': 'Investment', 'Spending': 'Spending', 'Saving': 'Savings' };
+
+// ---------- data ----------
+function load(force) {
+  if (!force) { try { var c = store(CACHE); if (c) { D = JSON.parse(c); render(); } } catch (e) {} }
+  var r = document.getElementById('refresh'); if (r) r.textContent = 'Updating…';
+  call('getDashboard', [], function (d) { D = d; store(CACHE, JSON.stringify(d)); render(); },
+    function (err) {
+      if (/NOT_CONNECTED/.test(err)) { store(CACHE, null); D = null; return setupScreen(); }
+      if (!D) document.getElementById('app').innerHTML = '<div class="loading">' + esc(err) + '<br><br><button class="btn" onclick="load(true)">Try again</button></div>';
+      else { toast(err); var r2 = document.getElementById('refresh'); if (r2) r2.textContent = '↻ ' + D.updated; }
+    });
+}
+function assistant(fn, args, after) {
+  if (busy) return; busy = true;
+  call(fn, args, function (res) { busy = false; D.assistant = res; picks = {}; store(CACHE, JSON.stringify(D)); closeSheet(); render(); if (after) after(); },
+    function (e) { busy = false; toast(e); });
+}
+
+function setupScreen() {
+  document.getElementById('nav').innerHTML = '';
+  REG = [];
+  var h = '<header><h1>Connect</h1></header><div class="card"><div style="font-weight:650;font-size:17px;margin-bottom:6px">Link this app to your sheet</div>' +
+    '<div class="sub">On a computer, open your FSP Google Sheet and choose <b>FSP Assistant → Connect my iPhone app</b>. Scan the QR code with your iPhone camera and open it in Safari, then tap <b>Share → Add to Home Screen</b>.</div>' +
+    '<label class="field"><span>Or paste the link here</span><input class="input" id="paste" placeholder="https://…#api=…&key=…" autocapitalize="off" autocorrect="off"></label>' +
+    '<button class="btn primary block" ' + on(function () {
+      var v = document.getElementById('paste').value, m = v.match(/api=([^&]+)&key=([0-9a-f]+)/i);
+      if (!m) return toast('That link doesn\'t look right');
+      store(CONN, JSON.stringify({ api: decodeURIComponent(m[1]), key: m[2] })); load(true);
+    }) + '>Connect</button></div>';
+  document.getElementById('app').innerHTML = h;
+}
+
+function nwStats() {
+  var nw = D.netWorth; if (!nw || nw.lastMonth < 0) return null;
+  var i = nw.lastMonth, cur = nw.total[i], prev = i > 0 ? nw.total[i - 1] : null;
+  var cash = 0, inv = 0;
+  nw.accounts.forEach(function (a) { if (a.type === 'cash') cash += a.values[i] || 0; else inv += a.values[i] || 0; });
+  var inv0 = sum(nw.accounts.filter(function (a) { return a.type !== 'cash'; }).map(function (a) { return a.values[0]; }));
+  var added = sum((nw.contributions || []).slice(1, i + 1));
+  return { i: i, cur: cur, prev: prev, change: prev != null ? cur - prev : null, pct: prev ? (cur - prev) / prev : null, cash: cash, inv: inv,
+    ytdStart: nw.total[0], contributionsYTD: sum((nw.contributions || []).slice(0, i + 1)), dividendsYTD: sum((nw.dividends || []).slice(0, i + 1)),
+    growth: inv - inv0 - added };
+}
+function currentMonthIdx() { return +D.today.slice(5, 7) - 1; }
+function latestMonthWithData() { var mi = currentMonthIdx(); while (mi > 0 && !D.monthly[mi].income && !D.monthly[mi].expenses) mi--; return mi; }
+function incomeYTD() { return sum(D.monthly.map(function (m) { return m.income; })); }
+function schedFor(src) { return D.assistant.schedules.filter(function (s) { return s.source === src; })[0] || null; }
+
+// ---------- charts ----------
+function axisText(x, y, t, anchor) { return '<text x="' + x + '" y="' + y + '" text-anchor="' + (anchor || 'middle') + '">' + t + '</text>'; }
+
+// Line chart with crosshair + tooltip (tap or drag).
+function lineChart(id, labels, series, opts) {
+  opts = opts || {};
+  var el = document.getElementById(id); if (!el) return;
+  var W = el.clientWidth || 320, H = opts.height || 170, L = 46, R = 10, T = 10, B = 22;
+  var n = labels.length, vals = [];
+  series.forEach(function (s) { s.values.forEach(function (v) { if (v != null) vals.push(v); }); });
+  if (!vals.length) { el.innerHTML = '<div class="empty">No data yet</div>'; return; }
+  var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if (opts.zero) lo = Math.min(0, lo);
+  var pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1; if (!opts.zero) lo -= pad; hi += pad;
+  var x = function (i) { return L + (n === 1 ? (W - L - R) / 2 : i * (W - L - R) / (n - 1)); };
+  var y = function (v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); };
+  var every = opts.labelEvery || (n > 7 ? 2 : 1);
+  var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" height="' + H + '">';
+  for (var g = 0; g <= 3; g++) { var gv = lo + (hi - lo) * g / 3, gy = y(gv);
+    s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + gy + '" y2="' + gy + '" stroke="var(--grid)"/>' + axisText(L - 6, gy + 4, short(gv), 'end'); }
+  labels.forEach(function (l, i) { if (i % every) return; s += axisText(x(i), H - 4, l); });
+  series.forEach(function (se) {
+    var d = '', started = false, lastI = -1, firstI = -1;
+    se.values.forEach(function (v, i) { if (v == null) return; d += (started ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); if (!started) firstI = i; started = true; lastI = i; });
+    if (!started) return;
+    if (se.fill) s += '<path d="' + d + 'L' + x(lastI) + ' ' + (H - B) + 'L' + x(firstI) + ' ' + (H - B) + 'Z" fill="' + se.color + '" opacity=".10"/>';
+    s += '<path d="' + d + '" fill="none" stroke="' + se.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"' + (se.dash ? ' stroke-dasharray="5 5"' : '') + '/>';
+    if (!se.dash) s += '<circle cx="' + x(lastI) + '" cy="' + y(se.values[lastI]) + '" r="4" fill="' + se.color + '" stroke="var(--card)" stroke-width="2"/>';
+  });
+  s += '<g class="hover" style="display:none"><line class="xh" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>' +
+    series.map(function (se, k) { return '<circle class="hd' + k + '" r="5" fill="' + se.color + '" stroke="var(--card)" stroke-width="2"/>'; }).join('') + '</g>';
+  s += '<rect x="' + L + '" y="0" width="' + (W - L - R) + '" height="' + H + '" fill="transparent"/></svg><div class="tip"></div>';
+  el.innerHTML = s;
+  var svg = el.querySelector('svg'), tip = el.querySelector('.tip'), hg = el.querySelector('.hover');
+  function show(evt) {
+    var r = svg.getBoundingClientRect(), px = (evt.touches ? evt.touches[0].clientX : evt.clientX) - r.left;
+    var i = Math.round((px * W / r.width - L) / ((W - L - R) / Math.max(1, n - 1))); i = Math.max(0, Math.min(n - 1, i));
+    if (!series.some(function (se) { return se.values[i] != null; })) return hide();
+    hg.style.display = ''; var xl = hg.querySelector('.xh'); xl.setAttribute('x1', x(i)); xl.setAttribute('x2', x(i));
+    var html = '<b>' + (opts.tipLabels || labels)[i] + '</b>';
+    series.forEach(function (se, k) { var c = hg.querySelector('.hd' + k), v = se.values[i];
+      if (v == null) { c.style.display = 'none'; return; } c.style.display = ''; c.setAttribute('cx', x(i)); c.setAttribute('cy', y(v));
+      html += '<br><i style="background:' + se.color + '"></i>' + (series.length > 1 ? esc(se.name) + ' ' : '') + money(v, 0); });
+    tip.innerHTML = html; tip.style.opacity = 1;
+    tip.style.left = Math.max(64, Math.min(r.width - 64, x(i) * r.width / W)) + 'px';
+  }
+  function hide() { hg.style.display = 'none'; tip.style.opacity = 0; }
+  svg.addEventListener('pointermove', show); svg.addEventListener('pointerdown', show); svg.addEventListener('pointerleave', hide);
+}
+
+// Bar chart (grouped, or signed up/down when opts.signed) with per-bar tooltip.
+function barChart(id, labels, series, opts) {
+  opts = opts || {};
+  var el = document.getElementById(id); if (!el) return;
+  var W = el.clientWidth || 320, H = opts.height || 170, L = 46, R = 6, T = 10, B = 22;
+  var hi = 0, lo = 0; series.forEach(function (s) { s.values.forEach(function (v) { if (v > hi) hi = v; if (v < lo) lo = v; }); });
+  if (!hi && !lo) { el.innerHTML = '<div class="empty">Nothing entered yet</div>'; return; }
+  var rng = hi - lo; hi = hi + rng * .06; lo = lo < 0 ? lo - rng * .06 : 0;
+  var n = labels.length, slot = (W - L - R) / n, gap = 2, bw = Math.max(3, Math.min(18, (slot * 0.7 - gap * (series.length - 1)) / series.length));
+  var y = function (v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); }, y0 = y(0);
+  var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" height="' + H + '">';
+  for (var g = 0; g <= 3; g++) { var gv = lo + (hi - lo) * g / 3, gy = y(gv);
+    s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + gy + '" y2="' + gy + '" stroke="var(--grid)"/>' + axisText(L - 6, gy + 4, short(gv), 'end'); }
+  if (lo < 0) s += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y0 + '" y2="' + y0 + '" stroke="var(--muted)"/>';
+  labels.forEach(function (l, i) {
+    var cx = L + slot * (i + .5), groupW = series.length * bw + (series.length - 1) * gap;
+    if (!(n > 7 && i % 2)) s += axisText(cx, H - 4, l);
+    series.forEach(function (se, k) { var v = se.values[i]; if (!v) return;
+      var bx = cx - groupW / 2 + k * (bw + gap), top = Math.min(y(v), y0), bot = Math.max(y(v), y0), bh = bot - top, r = Math.min(4, bw / 2, bh);
+      var col = opts.signed ? (v >= 0 ? 'var(--good)' : 'var(--bad)') : se.color;
+      var d = v >= 0
+        ? 'M' + bx + ' ' + bot + 'V' + (top + r) + 'Q' + bx + ' ' + top + ' ' + (bx + r) + ' ' + top + 'H' + (bx + bw - r) + 'Q' + (bx + bw) + ' ' + top + ' ' + (bx + bw) + ' ' + (top + r) + 'V' + bot + 'Z'
+        : 'M' + bx + ' ' + top + 'V' + (bot - r) + 'Q' + bx + ' ' + bot + ' ' + (bx + r) + ' ' + bot + 'H' + (bx + bw - r) + 'Q' + (bx + bw) + ' ' + bot + ' ' + (bx + bw) + ' ' + (bot - r) + 'V' + top + 'Z';
+      s += '<path d="' + d + '" fill="' + col + '"' + (opts.highlight != null && opts.highlight !== i ? ' opacity=".35"' : '') + '/>'; });
+    s += '<rect class="hit" data-i="' + i + '" x="' + (L + slot * i) + '" y="0" width="' + slot + '" height="' + (H - B) + '" fill="transparent"/>';
+  });
+  s += '</svg><div class="tip"></div>';
+  el.innerHTML = s;
+  var svg = el.querySelector('svg'), tip = el.querySelector('.tip');
+  svg.querySelectorAll('.hit').forEach(function (h) {
+    function show() { var i = +h.getAttribute('data-i'), r = svg.getBoundingClientRect();
+      var html = '<b>' + (opts.tipLabels || labels)[i] + '</b>';
+      series.forEach(function (se) { var v = se.values[i];
+        html += '<br><i style="background:' + (opts.signed ? (v >= 0 ? 'var(--good)' : 'var(--bad)') : se.color) + '"></i>' + (series.length > 1 ? esc(se.name) + ' ' : '') +
+          (v == null ? '—' : opts.signed ? (v >= 0 ? '▲ +' : '▼ ') + money(v, 0) : money(v, 0)); });
+      tip.innerHTML = html; tip.style.opacity = 1; tip.style.left = Math.max(64, Math.min(r.width - 64, (L + slot * (i + .5)) * r.width / W)) + 'px'; }
+    h.addEventListener('pointerenter', show); h.addEventListener('pointerdown', show);
+  });
+  svg.addEventListener('pointerleave', function () { tip.style.opacity = 0; });
+}
+function legend(items) { return '<div class="key" style="margin-top:10px">' + items.map(function (it) {
+  return '<span><i' + (it[2] ? ' class="dash"' : ' style="background:' + it[1] + '"') + '></i>' + esc(it[0]) + '</span>'; }).join('') + '</div>'; }
+
+// ---------- bottom sheet ----------
+function openSheet(html) { document.getElementById('sheetBody').innerHTML = html; document.getElementById('shade').classList.add('on'); document.getElementById('sheet').classList.add('on'); }
+function closeSheet() { document.getElementById('shade').classList.remove('on'); document.getElementById('sheet').classList.remove('on'); }
+
+// Add income: the day defaults to that source's usual payday.
+var addState = null;
+function openAddIncome(src) {
+  var sources = D.sources && D.sources.length ? D.sources : D.assistant.schedules.map(function (s) { return s.source; });
+  if (!addState || src) addState = { source: src || sources[0], amount: '', date: null, irregular: false };
+  var sc = schedFor(addState.source);
+  if (addState.date == null) addState.date = sc && sc.last && sc.type !== 'random' ? sc.last : D.today;
+  if (!addState.amount && sc && sc.lastAmount) addState.amount = String(sc.lastAmount);
+  var payday = sc && sc.type !== 'random' ? sc.last : null;
+  var h = '<h2>Add income</h2><div class="muted">Goes into the right cycle on the ' + esc(D.monthly[+addState.date.slice(5, 7) - 1].name) + ' tab.</div>';
+  h += '<div class="field"><span>Source</span><div class="days" style="margin:0">' + sources.map(function (s) {
+    return '<button class="btn' + (s === addState.source ? ' sel' : '') + '" ' + on(function () { addState = { source: s, amount: '', date: null, irregular: false }; openAddIncome(); }) + '>' + esc(s) + '</button>'; }).join('') + '</div></div>';
+  if (sc) h += '<div class="muted" style="margin-top:8px">' + esc(sc.text) + '</div>';
+  h += '<label class="field"><span>Amount</span><input class="input money" id="amt" inputmode="decimal" placeholder="$0.00" value="' + esc(addState.amount) + '"></label>';
+  var dates = [];
+  if (payday) dates.push([payday, 'Payday · ' + dlabel(payday)]);
+  if (D.today !== payday) dates.push([D.today, 'Today · ' + dlabel(D.today)]);
+  if (dates.every(function (d) { return d[0] !== addState.date; })) dates.push([addState.date, dlabel(addState.date)]);
+  h += '<div class="field"><span>Day paid</span><div class="days" style="margin:0">' + dates.map(function (d) {
+    return '<button class="btn' + (d[0] === addState.date ? ' sel' : '') + '" ' + on(function () { keepAmt(); addState.date = d[0]; addState.irregular = !!(payday && d[0] !== payday); openAddIncome(); }) + '>' + esc(d[1]) + '</button>'; }).join('') +
+    '<input type="date" class="btn" style="padding:9px 10px" value="' + addState.date + '" id="pickdate"></div></div>';
+  if (payday) h += '<label class="chk"><input type="checkbox" id="irr"' + (addState.irregular ? ' checked' : '') + '> Irregular — paid early/late (holiday etc.). Keeps your schedule as is.</label>';
+  h += '<button class="btn primary block" style="margin-top:18px" ' + on(function () {
+    keepAmt();
+    var amt = parseFloat(String(addState.amount).replace(/[$,\s]/g, ''));
+    if (!(amt > 0)) return toast('Enter an amount');
+    var irr = document.getElementById('irr'), mode = irr && irr.checked ? 'irregular' : 'regular';
+    if (busy) return; busy = true; toast('Saving…');
+    var src2 = addState.source;
+    call('addIncome', [src2, amt, addState.date, mode], function () {
+      busy = false; closeSheet(); toast('Added ' + money(amt) + ' · ' + src2); addState = null; load(true);
+    }, function (e) { busy = false; toast(e); });
+  }) + '>Add to sheet</button>';
+  openSheet(h);
+  document.getElementById('pickdate').addEventListener('change', function () {
+    if (!this.value) return; keepAmt(); addState.date = this.value; addState.irregular = !!(payday && this.value !== payday); openAddIncome();
+  });
+}
+function keepAmt() { var a = document.getElementById('amt'); if (a && addState) addState.amount = a.value; }
+
+// Change the day of an income that's already in the sheet (e.g. paid early before a holiday).
+function openEditIncome(t) {
+  var sel = t.date || t.options[0].date, mode = t.status === 'irregular' ? 'irregular' : 'regular';
+  function draw() {
+    var h = '<h2>' + esc(t.name) + ' · ' + money(t.amount) + '</h2><div class="muted">' + esc(t.sheet) + ' · cycle ' + esc(t.cycle) + (t.holiday ? ' · ' + esc(t.holiday) : '') + '</div>';
+    h += '<div class="field"><span>Day paid</span><div class="days" style="margin:0">' + t.options.map(function (o) {
+      return '<button class="btn' + (o.date === sel ? ' sel' : '') + '" ' + on(function () { sel = o.date; draw(); }) + '>' + esc(o.label) + '</button>'; }).join('') + '</div></div>';
+    h += '<div class="two" style="margin-top:16px"><button class="btn' + (mode === 'regular' ? ' sel' : '') + '" ' + on(function () { mode = 'regular'; draw(); }) + '>Regular payday</button>' +
+      '<button class="btn' + (mode === 'irregular' ? ' warnb' : '') + '" ' + on(function () { mode = 'irregular'; draw(); }) + '>Irregular</button></div>';
+    h += '<div class="muted" style="margin-top:8px">Irregular = a one-off (holiday, early or late). It won\'t change your pay schedule.</div>';
+    h += '<button class="btn primary block" style="margin-top:16px" ' + on(function () { assistant('setIncomeDate', [t.key, t.fp, sel, mode], function () { toast('Saved'); }); }) + '>Save</button>';
+    openSheet(h);
+  }
+  draw();
+}
+
+// Edit a pay schedule.
+function openSchedule(s) {
+  var p = s.pattern || {}, type = s.type || 'weekly', wd = (p.type === 'weekly' || p.type === 'biweekly') && p.anchor ? dt(p.anchor).getUTCDay() : 5;
+  var anchor = p.type === 'biweekly' ? p.anchor : null, d1 = p.days ? p.days[0] : 15, d2 = p.days && p.days[1] ? p.days[1] : 31, hol = s.holidayCheck;
+  function firstWd(w) { var d = new Date(Date.UTC(+D.today.slice(0, 4), 0, 1)); while (d.getUTCDay() !== w) d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
+  function keep() { var a = document.getElementById('d1'), b = document.getElementById('d2'), c = document.getElementById('hol'), e = document.getElementById('anc');
+    if (a) d1 = +a.value; if (b) d2 = +b.value; if (c) hol = c.checked; if (e && e.value) anchor = e.value; }
+  function draw() {
+    var h = '<h2>' + esc(s.source) + '</h2><div class="muted">How often does it pay?</div>';
+    h += '<div class="days">' + [['weekly', 'Every week'], ['biweekly', 'Every other week'], ['semimonthly', 'Twice a month'], ['monthly', 'Monthly'], ['random', 'Random']].map(function (o) {
+      return '<button class="btn' + (o[0] === type ? ' sel' : '') + '" ' + on(function () { keep(); type = o[0]; draw(); }) + '>' + o[1] + '</button>'; }).join('') + '</div>';
+    if (type === 'weekly' || type === 'biweekly') {
+      h += '<div class="field"><span>Day</span><div class="days" style="margin:0">' + WD.map(function (w, i) {
+        return '<button class="btn' + (i === wd ? ' sel' : '') + '" ' + on(function () { keep(); if (wd !== i) anchor = null; wd = i; draw(); }) + '>' + w + '</button>'; }).join('') + '</div></div>';
+      if (type === 'biweekly') h += '<label class="field"><span>A recent payday</span><input type="date" class="input" id="anc" value="' + (anchor || '') + '"></label>';
+    }
+    if (type === 'monthly' || type === 'semimonthly') {
+      h += '<label class="field"><span>' + (type === 'monthly' ? 'Day of the month' : 'First day of the month') + '</span><input class="input" id="d1" type="number" inputmode="numeric" min="1" max="31" value="' + d1 + '"></label>';
+      if (type === 'semimonthly') h += '<label class="field"><span>Second day (31 = last day)</span><input class="input" id="d2" type="number" inputmode="numeric" min="1" max="31" value="' + d2 + '"></label>';
+    }
+    if (type === 'random') h += '<div class="sub" style="margin-top:12px">It will ask which day each time this income shows up.</div>';
+    else h += '<label class="chk"><input type="checkbox" id="hol"' + (hol ? ' checked' : '') + '> Holidays can move this payday — ask me when a payday lands on one</label>';
+    h += '<button class="btn primary block" style="margin-top:18px" ' + on(function () {
+      keep();
+      var date, second = null;
+      if (type === 'weekly') date = firstWd(wd);
+      else if (type === 'biweekly') { date = anchor; if (!date) return toast('Pick a recent payday'); if (dt(date).getUTCDay() !== wd) return toast('That date isn\'t a ' + WDL[wd]); }
+      else if (type === 'random') date = D.today.slice(0, 4) + '-01-01';
+      else { if (!(d1 >= 1 && d1 <= 31)) return toast('Day must be 1–31');
+        date = D.today.slice(0, 4) + '-01-' + ('0' + Math.min(d1, 31)).slice(-2);
+        if (type === 'semimonthly') { second = d2; if (!(second >= 1 && second <= 31)) return toast('Day must be 1–31'); } }
+      assistant('setSchedule', [s.source, type, date, second, type === 'random' ? false : hol], function () { toast('Schedule saved'); });
+    }) + '>Save schedule</button>';
+    openSheet(h);
+  }
+  draw();
+}
+
+// ---------- screens ----------
+function screenHome() {
+  var st = nwStats(), mi = latestMonthWithData(), m = D.monthly[mi], h = '';
+  var qs = D.assistant.questions.length;
+  if (qs) h += '<button class="alert" ' + on(function () { go('paydays'); }) + '><span>' + qs + ' payday question' + (qs > 1 ? 's' : '') + ' need' + (qs > 1 ? '' : 's') + ' you</span>›</button>';
+  if (st) {
+    h += '<div class="card"><div class="label">Net worth · ' + D.months[st.i] + '</div><div class="hero">' + money(st.cur) + '</div>';
+    if (st.change != null) h += '<div class="delta ' + (st.change >= 0 ? 'up' : 'down') + '">' + (st.change >= 0 ? '▲ ' : '▼ ') + money(Math.abs(st.change)) + ' (' + pct(Math.abs(st.pct), 1) + ') vs ' + D.months[st.i - 1] + '</div>';
+    var tot = st.cash + st.inv || 1;
+    h += '<div class="split"><div style="width:' + (st.cash / tot * 100) + '%;background:var(--s1)"></div><div style="width:' + (st.inv / tot * 100) + '%;background:var(--s2)"></div></div>';
+    h += '<div class="row sub"><span><i class="sw" style="background:var(--s1)"></i>Cash ' + money(st.cash, 0) + '</span><span><i class="sw" style="background:var(--s2)"></i>Investments ' + money(st.inv, 0) + '</span></div>';
+    h += '<div class="chart" id="homeNw"></div></div>';
+  }
+  h += '<div class="section">' + D.monthly[mi].name + '</div><div class="grid2">' +
+    '<div class="card"><div class="label">Income</div><div class="big">' + money(m.income, 0) + '</div></div>' +
+    '<div class="card"><div class="label">Spent</div><div class="big">' + money(m.expenses, 0) + '</div></div></div>';
+  var ov = D.overview, ytd = incomeYTD();
+  if (ov && ov.yearGoal) {
+    var doy = (Date.parse(D.today) - Date.parse(D.today.slice(0, 4) + '-01-01')) / 864e5 + 1, pace = ytd / doy * 365;
+    h += '<div class="card"><div class="row"><div class="label">Income this year</div><div class="muted">goal ' + money(ov.yearGoal, 0) + '</div></div>' +
+      '<div class="big">' + money(ytd, 0) + ' <span class="sub" style="font-weight:400">· ' + pct(ytd / ov.yearGoal) + '</span></div>' +
+      '<div class="bar"><div style="width:' + Math.min(100, ytd / ov.yearGoal * 100) + '%;background:var(--s1)"></div><div class="goal" style="left:' + Math.min(99.5, doy / 365 * 100) + '%"></div></div>' +
+      '<div class="muted" style="margin-top:8px">On pace for ' + money(pace, 0) + ' · the line marks today</div></div>';
+  }
+  var sch = D.assistant.schedules.filter(function (s) { return s.next; }).sort(function (a, b) { return a.next < b.next ? -1 : a.next > b.next ? 1 : 0; });
+  if (sch.length) {
+    var soon = sch.filter(function (s) { return s.next === sch[0].next; });
+    h += '<div class="card"><div class="label">Next payday</div><div class="big">' + esc(sch[0].nextLabel) + '</div><div class="sub">' + soon.map(function (s) { return esc(s.source); }).join(' & ') + '</div></div>';
+  }
+  return h;
+}
+function afterHome() { var nw = D.netWorth; if (nw) lineChart('homeNw', D.months, [{ name: 'Net worth', color: 'var(--accent)', values: nw.total, fill: true }], { height: 120 }); }
+
+function screenIncome() {
+  var h = '', ytd = incomeYTD(), ov = D.overview;
+  var srcTot = {}; D.monthly.forEach(function (m) { Object.keys(m.bySource).forEach(function (s) { srcTot[s] = (srcTot[s] || 0) + m.bySource[s]; }); });
+  var srcs = Object.keys(srcTot).sort(function (a, b) { return srcTot[b] - srcTot[a]; });
+  h += '<div class="card"><div class="row" style="align-items:center"><div class="label" style="margin:0">Income this year</div><div class="seg">' +
+    '<button class="' + (incomeView === 'ytd' ? 'on' : '') + '" ' + on(function () { incomeView = 'ytd'; render(); }) + '>Year to date</button>' +
+    '<button class="' + (incomeView === 'month' ? 'on' : '') + '" ' + on(function () { incomeView = 'month'; render(); }) + '>Monthly</button></div></div>' +
+    '<div class="hero" style="margin-top:8px">' + money(ytd) + '</div>';
+  if (ov && ov.yearGoal) h += '<div class="sub">' + pct(ytd / ov.yearGoal) + ' of your ' + money(ov.yearGoal, 0) + ' goal</div>';
+  h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && ov && ov.quarters.length ? legend([['Earned', 'var(--s1)'], ['Goal pace', '', true]]) : '') + '</div>';
+  h += '<div class="card"><div class="label">By source</div>';
+  h += srcs.length ? '<div class="list">' + srcs.map(function (s) {
+    var cnt = D.monthly.reduce(function (c, m) { return c + (m.bySource[s] ? 1 : 0); }, 0), sc = schedFor(s);
+    return '<div class="item"><div class="row"><span>' + esc(s) + '</span><span class="num">' + money(srcTot[s], 0) + '</span></div>' +
+      '<div class="bar"><div style="width:' + (srcTot[s] / ytd * 100) + '%;background:var(--s1)"></div></div>' +
+      '<div class="muted" style="margin-top:4px">' + pct(srcTot[s] / ytd) + ' of income · ' + cnt + ' month' + (cnt === 1 ? '' : 's') + (sc ? ' · ' + esc(sc.text) : '') + '</div></div>';
+  }).join('') + '</div>' : '<div class="empty">No income entered yet</div>';
+  h += '</div>';
+  if (ov && ov.quarters.length) {
+    h += '<div class="card"><div class="label">Quarterly goals</div><div class="list">';
+    var qa = [0, 1, 2, 3].map(function (q) { return sum(D.monthly.slice(q * 3, q * 3 + 3).map(function (m) { return m.income; })); });
+    ov.quarters.forEach(function (q, i) { var a = qa[i] || 0, p = q.goal ? a / q.goal : 0;
+      h += '<div class="item"><div class="row"><span>' + q.label + '</span><span class="num">' + money(a, 0) + ' <span class="muted">/ ' + money(q.goal, 0) + '</span></span></div>' +
+        '<div class="bar"><div style="width:' + Math.min(100, p * 100) + '%;background:' + (p >= 1 ? 'var(--good)' : 'var(--s1)') + '"></div></div>' +
+        '<div class="muted" style="margin-top:4px">' + (p >= 1 ? '✓ Goal hit' : pct(p) + ' of goal') + '</div></div>'; });
+    h += '</div></div>';
+  }
+  return h;
+}
+function afterIncome() {
+  var names = D.monthly.map(function (m) { return m.name; });
+  if (incomeView === 'month') return barChart('incChart', D.months, [{ name: 'Income', color: 'var(--s1)', values: D.monthly.map(function (m) { return m.income; }) }], { tipLabels: names });
+  var last = latestMonthWithData(), run = 0, cum = D.monthly.map(function (m, i) { run += m.income; return i <= last ? run : null; });
+  var series = [{ name: 'Earned', color: 'var(--s1)', values: cum, fill: true }];
+  var ov = D.overview;
+  if (ov && ov.quarters.length) { var g = 0, goal = D.monthly.map(function (m, i) { var q = ov.quarters[Math.floor(i / 3)]; g += (q ? q.goal : 0) / 3; return g; });
+    series.push({ name: 'Goal pace', color: 'var(--muted)', values: goal, dash: true }); }
+  lineChart('incChart', D.months, series, { zero: true, height: 190, tipLabels: names.map(function (n) { return 'Through ' + n; }) });
+}
+
+function screenNetWorth() {
+  var st = nwStats(), nw = D.netWorth, h = '';
+  if (!st) return '<div class="card empty">Fill in the Net Worth tab to see this.</div>';
+  h += '<div class="card"><div class="label">Net worth · ' + D.months[st.i] + '</div><div class="hero">' + money(st.cur) + '</div>';
+  if (st.change != null) h += '<div class="delta ' + (st.change >= 0 ? 'up' : 'down') + '">' + (st.change >= 0 ? '▲ ' : '▼ ') + money(Math.abs(st.change)) + ' this month · ' +
+    (st.cur - st.ytdStart >= 0 ? '+' : '−') + money(Math.abs(st.cur - st.ytdStart), 0) + ' (' + pct(Math.abs(st.cur - st.ytdStart) / st.ytdStart, 0) + ') since Jan</div>';
+  h += '<div class="chart" id="nwLine"></div>' + legend([['Cash', 'var(--s1)'], ['Investments', 'var(--s2)']]) + '</div>';
+
+  // Month Change / NW % Change rows
+  var changes = nw.total.map(function (v, i) { return i > 0 && v != null && nw.total[i - 1] != null ? v - nw.total[i - 1] : null; });
+  var real = changes.filter(function (v) { return v != null; });
+  h += '<div class="card"><div class="label">Change each month</div><div class="chart" id="nwChange"></div>';
+  if (real.length) {
+    var avg = sum(real) / real.length, best = Math.max.apply(null, real), worst = Math.min.apply(null, real);
+    var bi = changes.indexOf(best), wi = changes.indexOf(worst);
+    h += '<div class="grid2" style="margin:12px 0 0"><div><div class="muted">Average</div><div class="num">' + (avg >= 0 ? '+' : '−') + money(Math.abs(avg), 0) + ' / mo</div></div>' +
+      '<div><div class="muted">Best · worst</div><div class="num">' + D.months[bi] + ' +' + money(best, 0) + ' · ' + D.months[wi] + ' ' + (worst < 0 ? '−' : '+') + money(Math.abs(worst), 0) + '</div></div></div>';
+  }
+  h += '</div>';
+
+  // $ to investing, Dividends, Investment %
+  h += '<div class="section">Investing</div><div class="grid2"><div class="card"><div class="label">Added YTD</div><div class="big">' + money(st.contributionsYTD, 0) + '</div></div>' +
+    '<div class="card"><div class="label">Dividends YTD</div><div class="big">' + money(st.dividendsYTD) + '</div></div></div>';
+  h += '<div class="card"><div class="label">Market growth since Jan</div><div class="big ' + (st.growth >= 0 ? 'up' : 'down') + '">' + (st.growth >= 0 ? '+' : '−') + money(Math.abs(st.growth), 0) + '</div>' +
+    '<div class="muted">How much your investments grew, not counting money you added</div>';
+  var rows = []; for (var i = 0; i <= st.i; i++) rows.push(i);
+  h += '<table class="t" style="margin-top:14px"><tr><th>Month</th><th>Added</th><th>Dividends</th><th>Return</th></tr>' + rows.map(function (i) {
+    var r = nw.investPct && nw.investPct[i];
+    return '<tr><td>' + D.months[i] + '</td><td>' + (nw.contributions[i] != null ? money(nw.contributions[i], 0) : '—') + '</td><td>' + (nw.dividends[i] != null ? money(nw.dividends[i]) : '—') +
+      '</td><td class="' + (r == null ? '' : r >= 0 ? 'up' : 'down') + '">' + (r == null ? '—' : (r >= 0 ? '+' : '−') + pct(Math.abs(r), 1)) + '</td></tr>';
+  }).join('') + '</table><div class="muted" style="margin-top:8px">Return = your sheet’s Investment % (growth after what you added).</div></div>';
+
+  // Accounts
+  h += '<div class="section">Accounts</div><div class="card list">' + nw.accounts.map(function (a) {
+    var v = a.values[st.i], p = st.i > 0 ? a.values[st.i - 1] : null, ch = p != null && v != null ? v - p : null;
+    return '<div class="row"><span>' + esc(a.name) + '<br><span class="muted">' + (a.type === 'cash' ? 'Cash' : 'Investments') + ' · ' + pct((v || 0) / st.cur) + ' of net worth</span></span><span class="num" style="text-align:right">' + money(v) +
+      (ch != null ? '<br><span class="' + (ch >= 0 ? 'up' : 'down') + '" style="font-size:12px">' + (ch >= 0 ? '+' : '−') + money(Math.abs(ch), 0) + '</span>' : '') + '</span></div>';
+  }).join('') + '</div>';
+
+  // Future Networth
+  if (!proj) proj = { rate: 7, add: 0 };
+  h += '<div class="section">Future net worth</div><div class="card"><div class="label">Projected</div>' +
+    '<div class="big" id="projBig"></div><div class="chart" id="projChart"></div>' +
+    '<label class="field"><span>Yearly return · <b id="rateV">' + proj.rate + '%</b></span><input type="range" min="0" max="12" step="0.5" value="' + proj.rate + '" oninput="proj.rate=+this.value;drawProj()"></label>' +
+    '<label class="field"><span>Add each month · <b id="addV">' + money(proj.add, 0) + '</b></span><input type="range" min="0" max="2000" step="50" value="' + proj.add + '" oninput="proj.add=+this.value;drawProj()"></label>' +
+    '<div class="label" style="margin-top:16px">Milestones</div><div class="list" id="milestones"></div>' +
+    '<div class="muted" style="margin-top:8px">At 7% with $0 added this matches the Future Networth row in your sheet: investments grow, cash stays put.</div></div>';
+  return h;
+}
+function projSeries() {
+  var st = nwStats(), y0 = +D.today.slice(0, 4), out = [];
+  for (var t = 0; t <= 50; t++) {
+    var r = proj.rate / 100, m = proj.add * 12, contrib = r ? m * (Math.pow(1 + r, t) - 1) / r : m * t;
+    out.push({ year: y0 + t, value: st.inv * Math.pow(1 + r, t) + contrib + st.cash });
+  }
+  return out;
+}
+function drawProj() {
+  var s = projSeries();
+  document.getElementById('rateV').textContent = proj.rate + '%';
+  document.getElementById('addV').textContent = money(proj.add, 0);
+  document.getElementById('projBig').innerHTML = money(s[30].value, 0) + ' <span class="sub" style="font-weight:400">in ' + s[30].year + ' (30 years)</span>';
+  var show = s.slice(0, 41);
+  lineChart('projChart', show.map(function (p) { return String(p.year); }), [{ name: 'Projected', color: 'var(--accent)', values: show.map(function (p) { return p.value; }), fill: true }],
+    { zero: true, height: 170, labelEvery: 10 });
+  document.getElementById('milestones').innerHTML = [100000, 250000, 500000, 1000000].map(function (goal) {
+    var hit = s.filter(function (p) { return p.value >= goal; })[0];
+    return '<div class="row"><span>' + (goal >= 1e6 ? '$1M' : '$' + goal / 1000 + 'k') + '</span><span class="num">' +
+      (hit ? (hit.year === s[0].year ? 'Already there' : hit.year + ' <span class="muted">· ' + (hit.year - s[0].year) + ' yrs</span>') : 'After ' + s[s.length - 1].year) + '</span></div>';
+  }).join('');
+}
+function afterNetWorth() {
+  var nw = D.netWorth; if (!nw || !nwStats()) return;
+  var cash = [], inv = [];
+  for (var i = 0; i < 12; i++) { var c = null, v = null;
+    nw.accounts.forEach(function (a) { if (a.values[i] == null) return; if (a.type === 'cash') c = (c || 0) + a.values[i]; else v = (v || 0) + a.values[i]; });
+    cash.push(c); inv.push(v); }
+  lineChart('nwLine', D.months, [{ name: 'Cash', color: 'var(--s1)', values: cash }, { name: 'Investments', color: 'var(--s2)', values: inv }], { zero: true, height: 190 });
+  var changes = nw.total.map(function (v, i) { return i > 0 && v != null && nw.total[i - 1] != null ? v - nw.total[i - 1] : null; });
+  barChart('nwChange', D.months, [{ name: 'Change', values: changes }], { signed: true, height: 140, tipLabels: D.monthly.map(function (m) { return m.name; }) });
+  drawProj();
+}
+
+function screenSpending() {
+  if (spendMonth == null) spendMonth = latestMonthWithData();
+  var m = D.monthly[spendMonth], h = '';
+  h += '<div class="chips">' + D.monthly.map(function (mm, i) { return '<button class="chip' + (i === spendMonth ? ' on' : '') + '" ' + on(function () { spendMonth = i; render(); }) + '>' + D.months[i] + '</button>'; }).join('') + '</div>';
+  h += '<div class="card"><div class="label">' + m.name + ' outflow</div><div class="hero">' + money(m.expenses) + '</div>' +
+    '<div class="sub">' + (m.income ? pct(m.expenses / m.income) + ' of ' + money(m.income, 0) + ' income' : 'No income entered') + '</div>';
+  var cats = CAT_ORDER.filter(function (c) { return m.byCategory[c]; }).concat(Object.keys(m.byCategory).filter(function (c) { return CAT_ORDER.indexOf(c) < 0; }));
+  if (cats.length) {
+    h += '<div class="split">' + cats.map(function (c) { return '<div style="width:' + (m.byCategory[c] / m.expenses * 100) + '%;background:' + catColor(c) + '"></div>'; }).join('') + '</div>';
+    h += legend(cats.map(function (c) { return [c + ' ' + money(m.byCategory[c], 0), catColor(c)]; }));
+  }
+  h += '</div>';
+  if (m.goals && m.income) {
+    h += '<div class="card"><div class="label">Plan vs actual</div><div class="list">';
+    Object.keys(m.goals).forEach(function (g) {
+      var cat = GOAL_KEY[g] || g, goalPct = m.goals[g], act = m.byCategory[cat] || 0, actPct = act / m.income;
+      h += '<div class="item"><div class="row"><span>' + esc(cat) + '</span><span class="num">' + money(act, 0) + ' <span class="muted">/ ' + money(goalPct * m.income, 0) + '</span></span></div>' +
+        '<div class="bar"><div style="width:' + Math.min(100, actPct * 100) + '%;background:' + catColor(cat) + '"></div><div class="goal" style="left:' + Math.min(99.5, goalPct * 100) + '%"></div></div>' +
+        '<div class="muted" style="margin-top:4px">' + pct(actPct) + ' of income · plan ' + pct(goalPct) + '</div></div>';
+    });
+    h += '</div><div class="muted" style="margin-top:8px">The line on each bar is your planned share of income.</div></div>';
+  }
+  h += '<div class="card"><div class="label">Income vs. outflow</div><div class="chart" id="ioBars"></div>' + legend([['Income', 'var(--s1)'], ['Outflow', 'var(--s2)']]) + '</div>';
+  return h;
+}
+function afterSpending() {
+  barChart('ioBars', D.months, [{ name: 'Income', color: 'var(--s1)', values: D.monthly.map(function (m) { return m.income; }) },
+    { name: 'Outflow', color: 'var(--s2)', values: D.monthly.map(function (m) { return m.expenses; }) }],
+    { highlight: spendMonth, tipLabels: D.monthly.map(function (m) { return m.name; }) });
+}
+
+function qCard(q) {
+  var where = esc(q.sheet) + ' · ' + esc(q.cycleLabel);
+  if (q.type === 'sameDay') {
+    return '<div class="card q"><div class="t">Same day — which comes first?</div><div class="muted">' + where + '</div>' +
+      '<div class="sub" style="margin-top:8px">' + esc(q.aDetail) + ' and ' + esc(q.bDetail) + ' are on the same row. Pick the order you standardize; it\'s used every time after.</div>' +
+      '<button class="btn block" ' + on(function () { ansOrder(q, 'a'); }) + '>' + esc(q.aLabel) + ' first</button>' +
+      '<button class="btn block" ' + on(function () { ansOrder(q, 'b'); }) + '>' + esc(q.bLabel) + ' first</button>' +
+      '<label class="chk"><input type="checkbox" id="all-' + esc(q.id) + '"> Apply to all income vs. all expenses</label></div>';
+  }
+  var sel = picks[q.id] || (q.type === 'holiday' ? q.expected : null);
+  var days = q.options.map(function (o) { return '<button class="btn' + (sel === o.date ? ' sel' : '') + '" ' + on(function () { picks[q.id] = o.date; render(); }) + '>' + esc(o.label) + '</button>'; }).join('');
+  var dis = sel ? '' : ' disabled';
+  function answer(mode) { return on(function () { assistant('answerQuestion', [q.id, { date: sel, mode: mode }]); }); }
+  if (q.type === 'holiday') {
+    return '<div class="card q off"><div class="t">' + esc(q.holiday) + ' payday · ' + esc(q.source) + ' <span class="muted">' + money(q.amount) + '</span></div><div class="muted">' + where + '</div>' +
+      '<div class="sub" style="margin-top:8px">Payday would be <b>' + esc(q.expectedLabel) + '</b>, which is ' + esc(q.holiday) + '. Were you paid that day, or early/late?</div>' +
+      '<div class="days">' + days + '</div>' +
+      '<button class="btn primary block" ' + answer('auto') + '>' + (sel === q.expected ? 'Paid on the normal day' : 'Save — paid ' + (sel < q.expected ? 'early' : 'late') + ' (irregular)') + '</button></div>';
+  }
+  if (q.type === 'pickDay') {
+    var hint = q.random ? esc(q.source) + ' is set to random days, so it asks each time.' : q.learnedFrom === 0 ? 'After two paydays it works these out on its own.' : q.learnedFrom === 1 ? 'One more and it knows your pattern.' : 'No regular pattern yet, so it keeps asking.';
+    return '<div class="card q"><div class="t">When was ' + esc(q.source) + ' paid? <span class="muted">' + money(q.amount) + '</span></div><div class="muted">' + where + '</div>' +
+      '<div class="days">' + days + '</div><div class="muted">' + hint + '</div>' +
+      '<div class="two"><button class="btn"' + dis + ' ' + answer('irregular') + '>Irregular</button><button class="btn primary"' + dis + ' ' + answer('regular') + '>Save pay day</button></div></div>';
+  }
+  var why = q.alreadyUsed ? 'This cycle\'s payday (' + esc(q.alreadyUsed) + ') already has a ' + esc(q.source) + ' row, so this is an extra one.' : 'No payday falls in this cycle.';
+  if (q.holidayNear) why += ' ' + esc(q.holidayNear) + ' is close — paid early or late?';
+  return '<div class="card q off"><div class="t">' + esc(q.source) + ' paid on a different day? <span class="muted">' + money(q.amount) + '</span></div><div class="muted">' + where + '</div>' +
+    '<div class="sub" style="margin-top:8px">Usually <b>' + esc(q.patternText) + '</b>. ' + why + ' Which day was it?</div><div class="days">' + days + '</div>' +
+    '<button class="btn block"' + dis + ' ' + answer('irregular') + '>Irregular — just this once</button>' +
+    '<button class="btn primary block"' + dis + ' ' + answer('changing') + '>My payday is changing to this day</button></div>';
+}
+function ansOrder(q, first) { var all = document.getElementById('all-' + q.id); assistant('answerQuestion', [q.id, { first: first, scope: all && all.checked ? 'all' : 'pair' }]); }
+
+function screenPaydays() {
+  var A = D.assistant, h = '';
+  if (A.questions.length) h += '<div class="section" style="margin-top:0">Needs you</div>' + A.questions.map(qCard).join('');
+  h += '<div class="section">Pay schedules · tap to change</div>';
+  h += A.schedules.length ? '<div class="card list">' + A.schedules.map(function (s) {
+    return '<div class="row" ' + on(function () { openSchedule(s); }) + ' style="cursor:pointer;align-items:center"><span><b>' + esc(s.source) + '</b><br><span class="sub">' + esc(s.text) + '</span>' +
+      (s.nextLabel ? '<br><span class="muted">Next: ' + esc(s.nextLabel) + (s.holidayCheck ? ' · watches holidays' : '') + '</span>' : '') + '</span>' +
+      '<span class="muted" style="white-space:nowrap">' + (s.manual ? '' : '<span class="pill' + (s.confidence === 'low' ? ' low' : '') + '">' + (s.pattern ? (s.confidence === 'low' ? 'learning' : 'learned') : 'unknown') + '</span> ') + '›</span></div>';
+  }).join('') + '</div>' : '<div class="card empty">No income yet</div>';
+  if (A.rules.length) h += '<div class="section">Same-day standards</div><div class="card list">' + A.rules.map(function (r) {
+    return '<div class="row" style="align-items:center"><span>' + esc(r.text) + '</span><button class="pillbtn" ' + on(function () { assistant('deleteRule', [r.index]); }) + '>Remove</button></div>'; }).join('') + '</div>';
+  var withData = D.monthly.map(function (m, i) { return A.timeline.some(function (t) { return t.sheet === m.name; }) ? i : -1; }).filter(function (i) { return i >= 0; });
+  if (withData.length) {
+    if (tlMonth == null || withData.indexOf(tlMonth) < 0) tlMonth = withData[withData.length - 1];
+    h += '<div class="section">In order · tap income to change its day</div><div class="chips">' + withData.map(function (i) { return '<button class="chip' + (i === tlMonth ? ' on' : '') + '" ' + on(function () { tlMonth = i; render(); }) + '>' + D.months[i] + '</button>'; }).join('') + '</div>';
+    h += '<div class="card">' + A.timeline.filter(function (t) { return t.sheet === D.monthly[tlMonth].name; }).map(function (t) {
+      var how = { confirmed: 'you confirmed', inferred: 'usual payday', irregular: 'irregular', estimated: 'between dated items', 'needs-answer': 'needs your answer', waiting: 'waiting' }[t.status] || t.status;
+      var tap = t.kind === 'income' && t.key && t.options;
+      return '<div class="tl' + (tap ? ' tap' : '') + '"' + (tap ? ' ' + on(function () { openEditIncome(t); }) : '') + '><span class="d">' + esc(t.dateText.replace(/^~/, '≈')) + '</span><span>' + esc(t.name) + '</span><span class="num ' + (t.kind === 'income' ? 'pos' : '') + '">' + (t.kind === 'income' ? '+' : '−') + money(t.amount, 0) + '</span>' +
+        '<span class="s">' + (t.kind === 'income' ? 'Income' : esc(t.category)) + ' · ' + how + (t.holiday ? ' · ' + esc(t.holiday) : '') + (t.orderPending ? ' · order not set' : '') + ' · balance ' + money(t.running, 0) + '</span></div>';
+    }).join('') + '</div>';
+  }
+  if (A.notices.length) h += A.notices.map(function (n) { return '<div class="alert" style="font-weight:500">' + esc(n) + '</div>'; }).join('');
+  return h;
+}
+
+// ---------- shell ----------
+var TABS = [
+  ['home', 'Home', '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>'],
+  ['income', 'Income', '<path d="M12 3v18M17 7.5c0-1.9-2.2-3-5-3s-5 1.1-5 3 2.2 2.6 5 3 5 1.3 5 3.3-2.2 3.2-5 3.2-5-1.2-5-3"/>'],
+  ['networth', 'Net Worth', '<path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>'],
+  ['spending', 'Spending', '<circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.4 6.4"/>'],
+  ['paydays', 'Paydays', '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>']
+];
+var SCREENS = { home: [screenHome, afterHome], income: [screenIncome, afterIncome], networth: [screenNetWorth, afterNetWorth], spending: [screenSpending, afterSpending], paydays: [screenPaydays, null] };
+function go(t) { tab = t; store('fsp-tab', t); render(); document.getElementById('scroller').scrollTop = 0; }
+function render() {
+  if (!D) return;
+  if (!SCREENS[tab]) tab = 'home';
+  REG = [];
+  var titles = { home: 'Overview', income: 'Income', networth: 'Net Worth', spending: 'Spending', paydays: 'Paydays' };
+  var body = SCREENS[tab][0]();
+  document.getElementById('app').innerHTML = '<header><h1>' + titles[tab] + '</h1><div class="hbtns"><button class="pillbtn" id="refresh" onclick="load(true)">↻</button>' +
+    '<button class="addbtn" ' + on(function () { addState = null; openAddIncome(); }) + '>+ Income</button></div></header>' +
+    (D.sample ? '<div class="sample">Sample data — this demo isn\'t connected to your sheet</div>' : '') + body +
+    '<div class="muted" style="text-align:center;margin-top:8px">Updated ' + esc(D.updated) + '</div>';
+  if (SCREENS[tab][1]) SCREENS[tab][1]();
+  var on2 = document.querySelector('.chips .chip.on'); if (on2) on2.parentNode.scrollLeft = on2.offsetLeft - 16;
+  var qn = D.assistant.questions.length;
+  document.getElementById('nav').innerHTML = TABS.map(function (t) {
+    return '<button class="' + (t[0] === tab ? 'on' : '') + '" ' + on(function () { go(t[0]); }) + '><svg viewBox="0 0 24 24">' + t[2] + '</svg>' + t[1] +
+      (t[0] === 'paydays' && qn ? '<span class="badge">' + qn + '</span>' : '') + '</button>';
+  }).join('');
+}
+var rT, lastW = window.innerWidth;
+window.addEventListener('resize', function () { if (window.innerWidth === lastW) return; lastW = window.innerWidth; clearTimeout(rT); rT = setTimeout(render, 150); });
+document.addEventListener('visibilitychange', function () { if (!document.hidden && D) load(true); });
+if (MODE === 'phone' && !connection()) setupScreen(); else load(false);
+</script>
+</body>
+</html>
