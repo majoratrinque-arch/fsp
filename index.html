@@ -1188,11 +1188,92 @@ function seasonal() {
   return { goal: G.goal, ytd: ytd, toDate: toDate, ratio: ratio, left: left, projected: projected, line: line, qShare: qShare, top: top,
     early: toDate < G.goal * 0.1 };
 }
+// Calculated projection: ignores your goals. Each source's rest-of-year comes from how it has actually paid,
+// and the shift job uses your scheduled Rippling shifts × rate (after tax) where the schedule covers.
+var projMode = store('fsp-proj-mode') || 'calc';
+function isShiftSource(src) { return /goldfish/i.test(src); }
+function calcProjection() {
+  var y = +D.today.slice(0, 4), today = D.today, end = y + '-12-31', cur = currentMonthIdx();
+  var daysLeft = (Date.parse(end) - Date.parse(today)) / 864e5;
+  if (daysLeft <= 0) return null;
+  var inc = D.assistant.timeline.filter(function (t) { return t.kind === 'income' && t.date && +t.amount > 0; });
+  var ytd = incomeYTD(), parts = [], events = [];
+  function since(src, days) { var from = addDaysStr(today, -days); return inc.filter(function (t) { return t.name === src && t.date > from && t.date <= today; }); }
+  function avg(a) { return a.length ? sum(a.map(function (t) { return +t.amount; })) / a.length : 0; }
+  function spread(total, from) { // even per day from `from` to Dec 31, bucketed by month
+    var d0 = Date.parse(from), n = (Date.parse(end) - d0) / 864e5 + 1;
+    for (var k = 0; k < n; k++) { var dd = new Date(d0 + k * 864e5); events.push([dd.getUTCMonth(), total / n]); } }
+  function paydays(sc) {
+    var step = { weekly: 7, biweekly: 14 }[sc.type], out = [], d = sc.next;
+    if (!d) return out;
+    if (step) { for (; d <= end; d = addDaysStr(d, step)) out.push(d); return out; }
+    var per = sc.type === 'semimonthly' ? 15.2 : 30.4, k = 0; for (; d <= end && k < 30; k++, d = addDaysStr(sc.next, Math.round(per * k))) out.push(d);
+    return out;
+  }
+  var srcs = {}; (D.sources || []).forEach(function (s) { srcs[s] = 1; }); inc.forEach(function (t) { srcs[t.name] = 1; });
+  Object.keys(srcs).forEach(function (src) {
+    var sc = schedFor(src), all = inc.filter(function (t) { return t.name === src; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    if (!all.length) return;
+    var paidToday = all.some(function (t) { return t.date === today; }), amt = 0, how = '';
+    var recent8 = sum(since(src, 56).map(function (t) { return +t.amount; })) / 8; // $/week, last 8 weeks
+    var sd = shiftData(), rate = hourlyRate();
+    if (isShiftSource(src) && sd && sd.list && rate) {
+      var net = rate * (1 - taxRate() / 100), now = nowStr();
+      var fut = sd.list.filter(function (e) { return e.end > now && e.start.slice(0, 10) <= end; });
+      var horizon = fut.length ? fut[fut.length - 1].start.slice(0, 10) : today;
+      var wks = Math.max(1, (Date.parse(horizon) - Date.parse(today)) / 864e5 / 7), sched = sum(fut.map(function (e) { return e.hours; })) * net;
+      var after = (Date.parse(end) - Date.parse(horizon)) / 864e5 / 7;
+      if (fut.length && sched / wks >= recent8 * 0.5) {
+        amt = sched + recent8 * after;
+        fut.forEach(function (e) { events.push([+e.start.slice(5, 7) - 1, e.hours * net]); }); spread(recent8 * after, addDaysStr(horizon, 1));
+        how = fut.length + ' scheduled shift' + (fut.length === 1 ? '' : 's') + ' through ' + dlabel(horizon).slice(4) + ' (' + money(sched, 0) + ' take-home), then your recent ' + money(recent8, 0) + '/week';
+      } else {
+        amt = recent8 * daysLeft / 7; spread(amt, addDaysStr(today, 1));
+        how = 'Your recent ' + money(recent8, 0) + '/week' + (fut.length ? '. Your Rippling schedule looks like it’s missing shifts, so it isn’t used here' : '');
+      }
+    } else if (sc && sc.type && sc.type !== 'random' && sc.next) {
+      var pd = paydays(sc).filter(function (d) { return d > today || (d === today && !paidToday); });
+      var per = avg(all.slice(-6));
+      amt = pd.length * per; pd.forEach(function (d) { events.push([+d.slice(5, 7) - 1, per]); });
+      how = pd.length + ' more payday' + (pd.length === 1 ? '' : 's') + ' × ' + money(per, 0) + ' (your last ' + Math.min(6, all.length) + ' checks)';
+    } else {
+      var r90 = sum(since(src, 91).map(function (t) { return +t.amount; })), mo = r90 / 3;
+      if (!r90) { var months = cur + +D.today.slice(8, 10) / 30.4; mo = sum(all.map(function (t) { return +t.amount; })) / Math.max(1, months); how = 'Your ' + money(mo, 0) + '/month average this year'; }
+      else how = 'Your ' + money(mo, 0) + '/month over the last 3 months';
+      amt = mo * daysLeft / 30.4; spread(amt, addDaysStr(today, 1));
+    }
+    if (amt > 0.5) parts.push({ source: src, amount: amt, how: how });
+  });
+  parts.sort(function (a, b) { return b.amount - a.amount; });
+  var add = sum(parts.map(function (p) { return p.amount; })), byM = [0,0,0,0,0,0,0,0,0,0,0,0];
+  events.forEach(function (e) { byM[e[0]] += e[1]; });
+  // Chart: today's total, then each later month adds what lands in it (this month's rest folds into the next point).
+  var line = D.months.map(function () { return null; });
+  if (cur < 11) { line[cur] = ytd; var run = ytd + byM[cur]; for (var k = cur + 1; k < 12; k++) { run += byM[k]; line[k] = run; } }
+  return { projected: ytd + add, add: add, parts: parts, line: line, ytd: ytd };
+}
 function projectionCard() {
-  var p = seasonal(); if (!p) return '';
+  var c = calcProjection(), g = seasonal(); if (!c && !g) return '';
+  var mode = projMode === 'goal' && g ? 'goal' : c ? 'calc' : 'goal', G = goals();
+  var h = '<div class="card"><div class="row" style="align-items:center"><div class="label" style="margin:0">Year-end projection</div>' +
+    (c && g ? '<div class="seg"><button class="' + (mode === 'calc' ? 'on' : '') + '" ' + on(function () { projMode = 'calc'; store('fsp-proj-mode', 'calc'); render(); }) + '>Calculated</button>' +
+    '<button class="' + (mode === 'goal' ? 'on' : '') + '" ' + on(function () { projMode = 'goal'; store('fsp-proj-mode', 'goal'); render(); }) + '>Your goals</button></div>' : '') + '</div>';
+  if (mode === 'calc') {
+    var diff = c.projected - G.goal;
+    h += '<div class="big" style="margin-top:8px">' + money(c.projected, 0) + '</div>' +
+      (G.goal ? '<div class="sub"><b class="' + (diff >= 0 ? 'up' : 'down') + '">' + (diff >= 0 ? '+' : '−') + money(Math.abs(diff), 0) + '</b> ' + (diff >= 0 ? 'above' : 'below') + ' your ' + money(G.goal, 0) + ' goal' + (g ? ' · goal-based: ' + money(g.projected, 0) : '') + '</div>' : '') +
+      '<div class="list" style="margin-top:10px"><div class="row"><span>Earned so far</span><span class="num">' + money(c.ytd, 0) + '</span></div>' +
+      c.parts.map(function (p) { return '<div class="row"><span>+ ' + esc(p.source) + '<br><span class="muted">' + esc(p.how) + '</span></span><span class="num" style="white-space:nowrap">' + money(p.amount, 0) + '</span></div>'; }).join('') +
+      '</div><div class="muted" style="margin-top:8px">Calculated from how each source has actually paid you' + (shiftData() && hourlyRate() ? ' and your upcoming shifts' : '') + '. It doesn’t use your goals.' +
+      (shiftData() && !hourlyRate() ? ' Add your hourly rate under Work shifts to include them.' : '') + '</div></div>';
+    return h;
+  }
+  return h + goalProjectionBody(g);
+}
+function goalProjectionBody(p) {
   var diff = p.projected - p.goal, Q = ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec'];
   function row(a, b, sub) { return '<div class="row"><span>' + a + (sub ? '<br><span class="muted">' + sub + '</span>' : '') + '</span><span class="num" style="white-space:nowrap">' + b + '</span></div>'; }
-  return '<div class="card"><div class="label">Year-end projection</div><div class="big">' + money(p.projected, 0) + '</div>' +
+  return '<div class="big" style="margin-top:8px">' + money(p.projected, 0) + '</div>' +
     '<div class="sub"><b class="' + (diff >= 0 ? 'up' : 'down') + '">' + (diff >= 0 ? '+' : '−') + money(Math.abs(diff), 0) + '</b> ' + (diff >= 0 ? 'above' : 'below') + ' your ' + money(p.goal, 0) + ' goal</div>' +
     '<div class="list" style="margin-top:10px">' +
     row('Your plan through today', money(p.toDate, 0), 'Your quarterly goals, prorated to ' + dlabel(D.today).slice(4)) +
@@ -1425,7 +1506,7 @@ function screenHome() {
       '<div class="big">' + money(ytd, 0) + ' <span class="sub" style="font-weight:400">· ' + pct(ytd / g.goal) + '</span></div>' +
       '<div class="bar"><div style="width:' + Math.min(100, ytd / g.goal * 100) + '%;background:' + (ytd >= g.goal ? 'var(--good)' : 'var(--s1)') + '"></div><div class="goal" style="left:' + Math.min(99.5, doy / 365 * 100) + '%"></div></div>' +
       (g.custom && g.base ? '<div class="sub" style="margin-top:8px">' + (hit != null ? '✓ First goal ' + money(g.base, 0) + ' reached in ' + D.monthly[hit].name : 'First goal ' + money(g.base, 0) + ': ' + pct(ytd / g.base)) + '</div>' : '') +
-      '<div class="muted" style="margin-top:6px">' + (seasonal() ? 'Projected ' + money(seasonal().projected, 0) + ' by Dec 31, following your quarterly goals' : 'On pace for ' + money(pace, 0)) + ' · the line marks today' +
+      '<div class="muted" style="margin-top:6px">' + (calcProjection() ? 'Projected ' + money(calcProjection().projected, 0) + ' by Dec 31' + (seasonal() ? ' (goal-based ' + money(seasonal().projected, 0) + ')' : '') : seasonal() ? 'Projected ' + money(seasonal().projected, 0) + ' by Dec 31, following your quarterly goals' : 'On pace for ' + money(pace, 0)) + ' · the line marks today' +
       (!g.custom && ytd >= g.base ? ' · <b style="color:var(--accent)">Goal hit — tap to set a new one</b>' : '') + '</div></div>';
   }
   h += nextShiftCard();
@@ -1486,7 +1567,8 @@ function afterIncome() {
   var G = goals();
   if (G.goal) { var g = 0, goal = D.monthly.map(function (m, i) { var q = ov && ov.quarters[Math.floor(i / 3)]; g += q && G.base ? q.goal * G.scale / 3 : G.goal / 12; return g; });
     series.push({ name: 'Plan', color: 'var(--muted)', values: goal, dash: true });
-    var sp = seasonal(); if (sp && sp.line.some(function (v) { return v != null; })) series.push({ name: 'Projected', color: 'var(--s2)', values: sp.line, dash: true }); }
+    var sp = projMode === 'goal' ? seasonal() : (calcProjection() || seasonal());
+    if (sp && sp.line.some(function (v) { return v != null; })) series.push({ name: 'Projected', color: 'var(--s2)', values: sp.line, dash: true }); }
   lineChart('incChart', D.months, series, { zero: true, height: 190, tipLabels: names.map(function (n) { return 'Through ' + n; }) });
 }
 
