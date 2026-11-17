@@ -844,6 +844,7 @@ if (typeof module !== 'undefined') module.exports = FSP;
     clearSchedule: function (s) { state = FSP.clearSchedule(state, s); },
     deleteRule: function (i) { state = FSP.deleteRule(state, i); },
     setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null;
+      if ('autoInvest' in p) state.settings.autoInvest = Number(p.autoInvest) >= 0 ? Number(p.autoInvest) : null;
       if ('taxRate' in p) state.settings.taxRate = Number(p.taxRate) > 0 && Number(p.taxRate) < 100 ? Number(p.taxRate) : null;
       if ('hourlyRate' in p) state.settings.hourlyRate = Number(p.hourlyRate) > 0 ? Number(p.hourlyRate) : null; }
   };
@@ -1192,6 +1193,17 @@ function seasonal() {
 // Calculated projection: ignores your goals. Each source's rest-of-year comes from how it has actually paid,
 // and the shift job uses your scheduled Rippling shifts × rate (after tax) where the schedule covers.
 var projMode = store('fsp-proj-mode') || 'calc';
+// Your rules: Sportsmen's only pays in summer; Other and Coaching are too random to project.
+var SEASONS = [{ re: /sportsmen/i, months: [5, 6, 7], label: 'summer only (Jun–Aug)' }];
+var NOT_PROJECTED = /^(other|coaching)$/i;
+function seasonOf(src) { return SEASONS.filter(function (x) { return x.re.test(src); })[0] || null; }
+function inSeason(src, mi) { var se = seasonOf(src); return !se || se.months.indexOf(mi) >= 0; }
+// You invest a set amount every Monday (Settings → Investing). Spending categories only hold spending.
+function autoInvest() { var v = D.settings && D.settings.autoInvest; return v == null ? 200 : +v; }
+function mondaysIn(fromExcl, toIncl) { var n = 0, d = addDaysStr(fromExcl, 1); while (d <= toIncl) { if (dt(d).getUTCDay() === 1) n++; d = addDaysStr(d, 1); } return n; }
+function investedInMonth(mi) { var y = D.today.slice(0, 4), first = y + '-' + ('0' + (mi + 1)).slice(-2) + '-01', last = iso10(new Date(Date.UTC(+y, mi + 1, 0)));
+  if (first > D.today) return 0; return mondaysIn(addDaysStr(first, -1), last < D.today ? last : D.today) * autoInvest(); }
+function iso10(d) { return d.toISOString().slice(0, 10); }
 function isShiftSource(src) { return /goldfish/i.test(src); }
 function calcProjection() {
   var y = +D.today.slice(0, 4), today = D.today, end = y + '-12-31', cur = currentMonthIdx();
@@ -1214,7 +1226,7 @@ function calcProjection() {
   var srcs = {}; (D.sources || []).forEach(function (s) { srcs[s] = 1; }); inc.forEach(function (t) { srcs[t.name] = 1; });
   Object.keys(srcs).forEach(function (src) {
     var sc = schedFor(src), all = inc.filter(function (t) { return t.name === src; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-    if (!all.length) return;
+    if (!all.length || NOT_PROJECTED.test(src)) return;
     var paidToday = all.some(function (t) { return t.date === today; }), amt = 0, how = '';
     var recent8 = sum(since(src, 56).map(function (t) { return +t.amount; })) / 8; // $/week, last 8 weeks
     var sd = shiftData(), rate = hourlyRate();
@@ -1233,10 +1245,11 @@ function calcProjection() {
         how = 'Your recent ' + money(recent8, 0) + '/week' + (fut.length ? '. Your Rippling schedule looks like it’s missing shifts, so it isn’t used here' : '');
       }
     } else if (sc && sc.type && sc.type !== 'random' && sc.next) {
-      var pd = paydays(sc).filter(function (d) { return d > today || (d === today && !paidToday); });
-      var per = avg(all.slice(-6));
+      var pd = paydays(sc).filter(function (d) { return (d > today || (d === today && !paidToday)) && inSeason(src, +d.slice(5, 7) - 1); });
+      var per = avg(all.slice(-6)), se = seasonOf(src);
       amt = pd.length * per; pd.forEach(function (d) { events.push([+d.slice(5, 7) - 1, per]); });
-      how = pd.length + ' more payday' + (pd.length === 1 ? '' : 's') + ' × ' + money(per, 0) + ' (your last ' + Math.min(6, all.length) + ' checks)';
+      how = pd.length + ' more payday' + (pd.length === 1 ? '' : 's') + ' × ' + money(per, 0) + ' (your last ' + Math.min(6, all.length) + ' checks)' + (se ? ', ' + se.label : '');
+      if (!pd.length && se) { parts.push({ source: src, amount: 0, how: se.label.charAt(0).toUpperCase() + se.label.slice(1) + ', so nothing more this year' }); return; }
     } else {
       var r90 = sum(since(src, 91).map(function (t) { return +t.amount; })), mo = r90 / 3;
       if (!r90) { var months = cur + +D.today.slice(8, 10) / 30.4; mo = sum(all.map(function (t) { return +t.amount; })) / Math.max(1, months); how = 'Your ' + money(mo, 0) + '/month average this year'; }
@@ -1265,7 +1278,7 @@ function projectionCard() {
       (G.goal ? '<div class="sub"><b class="' + (diff >= 0 ? 'up' : 'down') + '">' + (diff >= 0 ? '+' : '−') + money(Math.abs(diff), 0) + '</b> ' + (diff >= 0 ? 'above' : 'below') + ' your ' + money(G.goal, 0) + ' goal' + (g ? ' · goal-based: ' + money(g.projected, 0) : '') + '</div>' : '') +
       '<div class="list" style="margin-top:10px"><div class="row"><span>Earned so far</span><span class="num">' + money(c.ytd, 0) + '</span></div>' +
       c.parts.map(function (p) { return '<div class="row"><span>+ ' + esc(p.source) + '<br><span class="muted">' + esc(p.how) + '</span></span><span class="num" style="white-space:nowrap">' + money(p.amount, 0) + '</span></div>'; }).join('') +
-      '</div>' + extraShiftBox(c) + '<div class="muted" style="margin-top:8px">Calculated from how each source has actually paid you' + (shiftData() && hourlyRate() ? ' and your upcoming shifts' : '') + '. It doesn’t use your goals.' +
+      '</div>' + extraShiftBox(c) + '<div class="muted" style="margin-top:8px">Other and Coaching aren’t counted, since they’re random. Calculated from how each source has actually paid you' + (shiftData() && hourlyRate() ? ' and your upcoming shifts' : '') + '. It doesn’t use your goals.' +
       (shiftData() && !hourlyRate() ? ' Add your hourly rate under Work shifts to include them.' : '') + '</div></div>';
     return h;
   }
@@ -1322,7 +1335,8 @@ function nwEstimate() {
   if (cur <= i) return null;
   var income = 0, invest = 0, spent = 0, saved = 0;
   for (var k = i + 1; k <= cur; k++) { var m = D.monthly[k]; income += m.income;
-    Object.keys(m.byCategory).forEach(function (c) { var v = m.byCategory[c]; if (c === 'Investment') invest += v; else if (c === 'Savings') saved += v; else spent += v; }); }
+    Object.keys(m.byCategory).forEach(function (c) { var v = m.byCategory[c]; if (c === 'Savings') saved += v; else if (c !== 'Investment') spent += v; }); }
+  invest = mondaysIn(iso10(new Date(Date.UTC(+D.today.slice(0, 4), i + 1, 0))), D.today) * autoInvest();
   var mret = null, beta = 1, betaN = 0;
   if (mk && mk.monthEnd && mk.monthEnd[i + 1] && mk.latest) {
     mret = mk.latest.c / mk.monthEnd[i + 1] - 1;
@@ -1360,7 +1374,7 @@ function estimateCard(e, st) {
   var h = '<div class="card"><div class="label">How today’s estimate is worked out</div><div class="list">';
   h += '<div class="row"><span>Your ' + from + ' entry</span><span class="num">' + money(st.cur, 0) + '</span></div>';
   h += line('Income since', e.income, months + ' from your month tabs');
-  h += line('Spending since', -e.spent, e.invest ? money(e.invest, 0) + ' moved to investing (no change in net worth)' : '');
+  h += line('Spending since', -e.spent, e.invest ? money(e.invest, 0) + ' moved to investing (' + money(autoInvest(), 0) + ' every Monday, no change in net worth)' : '');
   if (e.mret == null) h += '<div class="row"><span>Market<br><span class="muted">Market data isn’t loaded yet — check back in a minute</span></span><span class="num">$0</span></div>';
   else h += line('Market', e.growth, 'S&P 500 ' + (e.mret >= 0 ? '+' : '−') + pct(Math.abs(e.mret), 1) + ' since ' + from + ' × your ' + e.beta.toFixed(2) + ' market sensitivity');
   h += '<div class="row"><span><b>Estimate today</b></span><span class="num">' + money(e.total, 0) + '</span></div></div>';
@@ -1373,7 +1387,7 @@ function estimateCard(e, st) {
 var checkinShown = false;
 function dueToday() {
   return D.assistant.schedules.filter(function (s) {
-    if (!s.type || s.type === 'random' || s.last !== D.today) return false;
+    if (!s.type || s.type === 'random' || s.last !== D.today || !inSeason(s.source, currentMonthIdx())) return false;
     if (store('fsp-checkin-' + D.today + '-' + s.source)) return false;
     return !D.assistant.timeline.some(function (t) { return t.kind === 'income' && t.name === s.source && t.date === D.today; });
   });
@@ -1490,16 +1504,14 @@ function openShiftSettings() {
 // ---------- extras: what money means in your life ----------
 function netRate() { var r = hourlyRate(); return r ? r * (1 - taxRate() / 100) : null; }
 function hashStr(t) { var x = 0; for (var i = 0; i < t.length; i++) x = (x * 31 + t.charCodeAt(i)) | 0; return Math.abs(x); }
-function typicalShift() { var sd = shiftData(); if (!sd || !sd.list || !sd.list.length) return 4;
-  var hs = sd.list.map(function (e) { return e.hours; }).filter(function (h) { return h >= 1; }).sort(function (a, b) { return a - b; });
-  return hs.length ? hs[Math.floor(hs.length / 2)] : 4; }
+function typicalShift() { return 4; } // a standard extra shift is 4 hours
 function spendPerDay() { var mi = latestMonthWithData(), sp = 0, n = 0;
   for (var k = Math.max(0, mi - 2); k <= mi; k++) { sp += D.monthly[k].byCategory.Spending || 0; n++; } return sp / (n * 30.4); }
 function monthlyIncomeAvg() { var mi = latestMonthWithData(), t = 0, n = 0; for (var k = Math.max(0, mi - 3); k < mi; k++) { t += D.monthly[k].income; n++; } return n ? t / n : D.monthly[mi].income; }
 function grow(a, yrs) { return a * Math.pow(1.08, yrs); }
 // A few ways to picture an amount; the shift card shows one, chosen by the shift so it stays put.
 function equivalents(a) {
-  var out = [], G = goals(), ytd = incomeYTD(), pd = spendPerDay(), mi = latestMonthWithData(), inv = D.monthly[mi].byCategory.Investment;
+  var out = [], G = goals(), ytd = incomeYTD(), pd = spendPerDay(), mi = latestMonthWithData(), inv = investedInMonth(mi);
   if (G.goal && G.goal > ytd) out.push(pct(a / (G.goal - ytd), 1) + ' of what’s left to reach ' + money(G.goal, 0));
   if (pd > 1) out.push((Math.round(a / pd * 10) / 10) + ' days of your usual spending');
   out.push(money(grow(a, 10), 0) + ' in 10 years if you invest it');
@@ -1553,8 +1565,8 @@ function openRecap(mi) {
   if (sd && sd.list) { var mk2 = D.today.slice(0, 4) + '-' + ('0' + (mi + 1)).slice(-2), sh = sd.list.filter(function (e) { return e.start.slice(0, 7) === mk2; });
     if (sh.length) t.push(tile('Hours worked', hrs(sum(sh.map(function (e) { return e.hours; }))), sh.length + ' shift' + (sh.length === 1 ? '' : 's'))); }
   t.push(tile('Spent', money(m.byCategory.Spending || 0, 0), spendCats.length && spendCats[0] !== 'Spending' ? 'Most on ' + esc(spendCats[0]) : m.income ? pct((m.byCategory.Spending || 0) / m.income) + ' of what you earned' : ''));
-  var put = (m.byCategory.Investment || 0) + (m.byCategory.Savings || 0);
-  t.push(tile('Put away', money(put, 0), m.income ? pct(put / m.income) + ' of what you earned' : ''));
+  var put = investedInMonth(mi), dep = nw && nw.contributions && nw.contributions[mi];
+  t.push(tile('Invested', money(put, 0), (m.income ? pct(put / m.income) + ' of what you earned' : '') + (dep ? ' · added ' + money(dep, 0) + ' to the account' : '')));
   if (nw && nw.total[mi] != null && mi > 0 && nw.total[mi - 1] != null) { var d = nw.total[mi] - nw.total[mi - 1];
     t.push(tile('Net worth', (d >= 0 ? '+' : '−') + money(Math.abs(d), 0), 'now ' + money(nw.total[mi], 0))); }
   var ip = nw && nw.investPct && nw.investPct[mi], sp = mk && mk.monthEnd && mk.monthEnd[mi] && mk.monthEnd[mi + 1] ? mk.monthEnd[mi + 1] / mk.monthEnd[mi] - 1 : null;
@@ -1575,6 +1587,9 @@ function openSettings() {
     '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
     '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
   h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
+  h += '<div class="field"><span>Auto-invest every Monday</span><div style="display:flex;gap:8px"><input class="input money" id="aiAmt" inputmode="decimal" value="' + autoInvest() + '"><button class="btn" style="margin:0" ' + on(function () {
+    var v = parseFloat(String(document.getElementById('aiAmt').value).replace(/[$,\s]/g, '')); if (!(v >= 0)) return toast('Enter an amount');
+    act('setSettings', [{ autoInvest: v }], function () { toast('Saved'); }, function (d) { d.settings = d.settings || {}; d.settings.autoInvest = v; }); }) + '>Save</button></div></div>';
   h += '<div class="field"><span>Work shifts</span><button class="btn block" style="text-align:left;margin:0" ' + on(openShiftSettings) + '>' + (D.shifts && D.shifts.connected ? 'Rippling · connected' + (hourlyRate() ? ' · ' + money(hourlyRate()) + '/hr' + (taxRate() ? ', ' + taxRate() + '% tax' : '') : '') : 'Not connected') + ' ›</button></div>';
   h += '<label class="chk"><input type="checkbox"' + (store('fsp-checkin-off') === '1' ? '' : ' checked') + ' onchange="store(\'fsp-checkin-off\', this.checked ? null : \'1\')"> Ask “did you get paid today?” on paydays</label>';
   if (MODE === 'phone') h += '<button class="btn block" style="margin-top:18px" ' + on(function () {
@@ -1608,7 +1623,7 @@ function screenHome() {
   if (lastM >= 0 && lastM === currentMonthIdx() - 1 && +D.today.slice(8, 10) <= 14)
     h += '<button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(function () { openRecap(lastM); }) + '><div class="row"><div><div class="label" style="margin:0">Your ' + D.monthly[lastM].name + ' recap is ready</div><div class="muted" style="margin-top:4px">Best moments, hours, and how you did vs. the market</div></div><div class="muted">›</div></div></button>';
   h += '<button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(openCostCheck) + '><div class="row"><div><div class="label" style="margin:0">Thinking of buying something?</div><div class="muted" style="margin-top:4px">See what it costs in hours and in future money</div></div><div class="muted">›</div></div></button>';
-  var sch = D.assistant.schedules.filter(function (s) { return s.next; }).sort(function (a, b) { return a.next < b.next ? -1 : a.next > b.next ? 1 : 0; });
+  var sch = D.assistant.schedules.filter(function (s) { return s.next && s.type !== 'random' && inSeason(s.source, +s.next.slice(5, 7) - 1); }).sort(function (a, b) { return a.next < b.next ? -1 : a.next > b.next ? 1 : 0; });
   if (sch.length) {
     var soon = sch.filter(function (s) { return s.next === sch[0].next; });
     var paid = sch[0].next === D.today && soon.every(function (s) { return D.assistant.timeline.some(function (t) { return t.kind === 'income' && t.name === s.source && t.date === D.today; }); });
@@ -1709,13 +1724,15 @@ function screenNetWorth() {
   }).join('') + '</div>';
 
   // Future Networth
-  if (!proj) proj = { rate: 7, addInv: 0, addCash: 0 };
+  var weeklyMo = Math.round(autoInvest() * 52 / 12 / 25) * 25;
+  if (!proj) proj = { rate: 7, addInv: weeklyMo, addCash: 0 };
   var avgInv = Math.round(st.contributionsYTD / (st.i + 1) / 25) * 25;
   h += '<div class="section">Future net worth</div><div class="card"><div class="label">Projected</div>' +
     '<div class="big" id="projBig"></div><div class="chart" id="projChart"></div>' +
     '<label class="field"><span>Yearly return · <b id="rateV">' + proj.rate + '%</b></span><input type="range" min="0" max="12" step="0.5" value="' + proj.rate + '" oninput="proj.rate=+this.value;drawProj()"></label>' +
     '<label class="field"><span>Invest each month · <b id="addInvV">' + money(proj.addInv, 0) + '</b></span><input type="range" min="0" max="2000" step="25" id="addInvR" value="' + proj.addInv + '" oninput="proj.addInv=+this.value;drawProj()"></label>' +
-    (avgInv ? '<div class="muted">You’ve averaged ' + money(avgInv, 0) + '/mo to investing this year · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); proj.addInv = avgInv; document.getElementById('addInvR').value = avgInv; drawProj(); }) + '>use it</a></div>' : '') +
+    '<div class="muted">' + money(autoInvest(), 0) + ' every Monday ≈ ' + money(weeklyMo, 0) + '/mo' + (proj.addInv !== weeklyMo ? ' · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); proj.addInv = weeklyMo; document.getElementById('addInvR').value = weeklyMo; drawProj(); }) + '>use it</a>' : '') +
+    (avgInv ? ' · you’ve added ' + money(avgInv, 0) + '/mo to the account this year' : '') + '</div>' +
     '<label class="field"><span>Save to cash each month · <b id="addCashV">' + money(proj.addCash, 0) + '</b></span><input type="range" min="0" max="2000" step="25" value="' + proj.addCash + '" oninput="proj.addCash=+this.value;drawProj()"></label>' +
     '<div class="label" style="margin-top:16px">Milestones</div><div class="list" id="milestones"></div>' +
     '<div class="muted" style="margin-top:8px">Investments grow at the yearly return; cash doesn’t grow. ' +
@@ -1764,8 +1781,9 @@ function afterNetWorth() {
 function screenSpending() {
   if (spendMonth == null) spendMonth = latestMonthWithData();
   var m = D.monthly[spendMonth], h = '';
-  h += '<div class="two" style="margin:0 0 12px"><button class="btn" style="margin:0" ' + on(openCostCheck) + '>Worth it?</button>' +
-    (recapMonths().indexOf(spendMonth) >= 0 ? '<button class="btn" style="margin:0" ' + on(function () { openRecap(spendMonth); }) + '>' + D.months[spendMonth] + ' recap</button>' : '<span></span>') + '</div>';
+  h += recapMonths().indexOf(spendMonth) >= 0
+    ? '<div class="two" style="margin:0 0 12px"><button class="btn" style="margin:0" ' + on(openCostCheck) + '>Worth it?</button><button class="btn" style="margin:0" ' + on(function () { openRecap(spendMonth); }) + '>' + D.months[spendMonth] + ' recap</button></div>'
+    : '<button class="btn block" style="margin:0 0 12px" ' + on(openCostCheck) + '>Worth it?</button>';
   h += '<div class="chips">' + D.monthly.map(function (mm, i) { return '<button class="chip' + (i === spendMonth ? ' on' : '') + '" ' + on(function () { spendMonth = i; render(); }) + '>' + D.months[i] + '</button>'; }).join('') + '</div>';
   h += '<div class="card"><div class="label">' + m.name + ' outflow</div><div class="hero">' + money(m.expenses) + '</div>' +
     '<div class="sub">' + (m.income ? pct(m.expenses / m.income) + ' of ' + money(m.income, 0) + ' income' : 'No income entered') + '</div>';
@@ -1778,12 +1796,13 @@ function screenSpending() {
   if (m.goals && m.income) {
     h += '<div class="card"><div class="label">Plan vs actual</div><div class="list">';
     Object.keys(m.goals).forEach(function (g) {
-      var cat = GOAL_KEY[g] || g, goalPct = m.goals[g], act = m.byCategory[cat] || 0, actPct = act / m.income;
+      var cat = GOAL_KEY[g] || g, goalPct = m.goals[g], act = cat === 'Investment' ? investedInMonth(spendMonth) : m.byCategory[cat] || 0, actPct = act / m.income;
+      if (cat === 'Savings' && !act) return;
       h += '<div class="item"><div class="row"><span>' + esc(cat) + '</span><span class="num">' + money(act, 0) + ' <span class="muted">/ ' + money(goalPct * m.income, 0) + '</span></span></div>' +
         '<div class="bar"><div style="width:' + Math.min(100, actPct * 100) + '%;background:' + catColor(cat) + '"></div><div class="goal" style="left:' + Math.min(99.5, goalPct * 100) + '%"></div></div>' +
         '<div class="muted" style="margin-top:4px">' + pct(actPct) + ' of income · plan ' + pct(goalPct) + '</div></div>';
     });
-    h += '</div><div class="muted" style="margin-top:8px">The line on each bar is your planned share of income.</div></div>';
+    h += '</div><div class="muted" style="margin-top:8px">The line on each bar is your planned share of income. Investing counts your ' + money(autoInvest(), 0) + ' every Monday.</div></div>';
   }
   h += '<div class="card"><div class="label">Income vs. outflow</div><div class="chart" id="ioBars"></div>' + legend([['Income', 'var(--s1)'], ['Outflow', 'var(--s2)']]) + '</div>';
   return h;
