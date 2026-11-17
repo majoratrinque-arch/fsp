@@ -1171,6 +1171,38 @@ function goals() {
   var base = D.overview && D.overview.yearGoal || 0, custom = D.settings && D.settings.incomeGoal || 0;
   return { base: base, custom: custom, goal: custom || base, scale: base && custom ? custom / base : 1 };
 }
+// Year-end projection that follows the seasonal shape of your quarterly goals:
+// how far ahead/behind your plan you are so far, applied to the rest of the plan.
+function seasonal() {
+  var G = goals(); if (!G.goal) return null;
+  var qs = D.overview && D.overview.quarters || [];
+  var mg = D.monthly.map(function (m, i) { var q = qs[Math.floor(i / 3)]; return q && G.base ? q.goal * G.scale / 3 : G.goal / 12; });
+  var cur = currentMonthIdx(), y = +D.today.slice(0, 4), dim = new Date(Date.UTC(y, cur + 1, 0)).getUTCDate(), frac = +D.today.slice(8, 10) / dim;
+  var toDate = sum(mg.slice(0, cur)) + mg[cur] * frac, ytd = incomeYTD();
+  if (!(toDate > 0)) return null;
+  var ratio = ytd / toDate, left = G.goal - toDate, projected = ytd + ratio * left;
+  var line = D.months.map(function () { return null; });
+  if (cur < 11) { line[cur] = ytd; var run = ytd + ratio * mg[cur] * (1 - frac); for (var k = cur + 1; k < 12; k++) { run += ratio * mg[k]; line[k] = run; } }
+  var qShare = [0, 1, 2, 3].map(function (q) { return sum(mg.slice(q * 3, q * 3 + 3)) / G.goal; });
+  var top = qShare.indexOf(Math.max.apply(null, qShare));
+  return { goal: G.goal, ytd: ytd, toDate: toDate, ratio: ratio, left: left, projected: projected, line: line, qShare: qShare, top: top,
+    early: toDate < G.goal * 0.1 };
+}
+function projectionCard() {
+  var p = seasonal(); if (!p) return '';
+  var diff = p.projected - p.goal, Q = ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec'];
+  function row(a, b, sub) { return '<div class="row"><span>' + a + (sub ? '<br><span class="muted">' + sub + '</span>' : '') + '</span><span class="num" style="white-space:nowrap">' + b + '</span></div>'; }
+  return '<div class="card"><div class="label">Year-end projection</div><div class="big">' + money(p.projected, 0) + '</div>' +
+    '<div class="sub"><b class="' + (diff >= 0 ? 'up' : 'down') + '">' + (diff >= 0 ? '+' : '−') + money(Math.abs(diff), 0) + '</b> ' + (diff >= 0 ? 'above' : 'below') + ' your ' + money(p.goal, 0) + ' goal</div>' +
+    '<div class="list" style="margin-top:10px">' +
+    row('Your plan through today', money(p.toDate, 0), 'Your quarterly goals, prorated to ' + dlabel(D.today).slice(4)) +
+    row('Earned so far', money(p.ytd, 0), pct(p.ratio) + ' of plan') +
+    row('Rest of the year in your plan', money(p.left, 0), pct(p.left / p.goal) + ' of the year’s goal is still ahead') +
+    row('Projected for the rest of the year', money(p.projected - p.ytd, 0), money(p.left, 0) + ' × ' + pct(p.ratio) + ', your pace so far') +
+    '</div><div class="muted" style="margin-top:8px">Your goals put the most in Q' + (p.top + 1) + ' (' + Q[p.top] + '): ' + pct(p.qShare[p.top]) + ' of the year. ' +
+    'The projection keeps that shape, so a busy summer counts as summer, not as your new normal.' +
+    (p.early ? ' It’s early in the year, so this will move a lot.' : '') + '</div></div>';
+}
 function reachedMonth(target) { if (!target) return null; var run = 0; for (var i = 0; i < 12; i++) { run += D.monthly[i].income; if (run >= target) return i; } return null; }
 function openGoal() {
   var g = goals();
@@ -1393,7 +1425,7 @@ function screenHome() {
       '<div class="big">' + money(ytd, 0) + ' <span class="sub" style="font-weight:400">· ' + pct(ytd / g.goal) + '</span></div>' +
       '<div class="bar"><div style="width:' + Math.min(100, ytd / g.goal * 100) + '%;background:' + (ytd >= g.goal ? 'var(--good)' : 'var(--s1)') + '"></div><div class="goal" style="left:' + Math.min(99.5, doy / 365 * 100) + '%"></div></div>' +
       (g.custom && g.base ? '<div class="sub" style="margin-top:8px">' + (hit != null ? '✓ First goal ' + money(g.base, 0) + ' reached in ' + D.monthly[hit].name : 'First goal ' + money(g.base, 0) + ': ' + pct(ytd / g.base)) + '</div>' : '') +
-      '<div class="muted" style="margin-top:6px">On pace for ' + money(pace, 0) + ' · the line marks today' +
+      '<div class="muted" style="margin-top:6px">' + (seasonal() ? 'Projected ' + money(seasonal().projected, 0) + ' by Dec 31, following your quarterly goals' : 'On pace for ' + money(pace, 0)) + ' · the line marks today' +
       (!g.custom && ytd >= g.base ? ' · <b style="color:var(--accent)">Goal hit — tap to set a new one</b>' : '') + '</div></div>';
   }
   h += nextShiftCard();
@@ -1423,7 +1455,8 @@ function screenIncome() {
   var g = goals();
   if (g.goal) h += '<div class="sub">' + pct(ytd / g.goal) + ' of your ' + money(g.goal, 0) + ' goal' + (g.custom && g.base && ytd >= g.base ? ' · first goal ' + money(g.base, 0) + ' ✓' : '') +
     ' · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); openGoal(); }) + '>change</a></div>';
-  h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && g.goal ? legend([['Earned', 'var(--s1)'], ['Pace for ' + money(g.goal, 0), '', true]]) : '') + '</div>';
+  h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && g.goal ? legend([['Earned', 'var(--s1)'], ['Projected', 'var(--s2)'], ['Plan for ' + money(g.goal, 0), '', true]]) : '') + '</div>';
+  h += projectionCard();
   h += shiftsSection();
   h += '<div class="card"><div class="label">By source</div>';
   h += srcs.length ? '<div class="list">' + srcs.map(function (s) {
@@ -1452,7 +1485,8 @@ function afterIncome() {
   var ov = D.overview;
   var G = goals();
   if (G.goal) { var g = 0, goal = D.monthly.map(function (m, i) { var q = ov && ov.quarters[Math.floor(i / 3)]; g += q && G.base ? q.goal * G.scale / 3 : G.goal / 12; return g; });
-    series.push({ name: 'Goal pace', color: 'var(--muted)', values: goal, dash: true }); }
+    series.push({ name: 'Plan', color: 'var(--muted)', values: goal, dash: true });
+    var sp = seasonal(); if (sp && sp.line.some(function (v) { return v != null; })) series.push({ name: 'Projected', color: 'var(--s2)', values: sp.line, dash: true }); }
   lineChart('incChart', D.months, series, { zero: true, height: 190, tipLabels: names.map(function (n) { return 'Through ' + n; }) });
 }
 
