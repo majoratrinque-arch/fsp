@@ -1291,20 +1291,23 @@ function clock(s) { var h = +s.slice(11, 13), m = s.slice(14, 16); return ((h % 
 function hrs(h) { h = Math.round(h * 10) / 10; return h + ' hr' + (h === 1 ? '' : 's'); }
 function taxRate() { return D.settings && D.settings.taxRate || 0; }
 // Take-home: hours × rate, minus the share withheld for taxes.
-function estPay(h) { var r = hourlyRate(); return r ? '≈ ' + money(h * r * (1 - taxRate() / 100), 0) : ''; }
+function estPay(h, label) { var r = hourlyRate(); return r ? '≈ ' + money(h * r * (1 - taxRate() / 100), 0) + (label ? (taxRate() ? ' take-home' : ' before tax') : '') : ''; }
 function payBasis() { return hourlyRate() ? money(hourlyRate()) + '/hr' + (taxRate() ? ' − ' + taxRate() + '% tax = take-home' : ' before tax') : ''; }
 function shiftDay(e) { var d = e.start.slice(0, 10); return d === D.today ? 'Today' : d === addDaysStr(D.today, 1) ? 'Tomorrow' : dlabel(d); }
 function shiftWhen(e) { return clock(e.start) + ' – ' + clock(e.end); }
 function shiftStats() {
   var sd = shiftData(); if (!sd || !sd.list) return null;
-  var now = nowStr(), in14 = addDaysStr(D.today, 14) + 'T23:59', ago30 = addDaysStr(D.today, -30), mon = D.today.slice(0, 7);
+  // Pay is weekly, so totals use this week (Monday–Sunday).
+  var wd = dt(D.today).getUTCDay(), mon0 = addDaysStr(D.today, -((wd + 6) % 7)), sun0 = addDaysStr(mon0, 6);
+  var now = nowStr(), ago30 = addDaysStr(D.today, -30), mon = D.today.slice(0, 7);
   var up = sd.list.filter(function (e) { return e.end > now; });
   function tot(a) { return sum(a.map(function (e) { return e.hours; })); }
-  var next14 = up.filter(function (e) { return e.start <= in14; });
+  var week = sd.list.filter(function (e) { var d = e.start.slice(0, 10); return d >= mon0 && d <= sun0; });
+  var weekLeft = week.filter(function (e) { return e.end > now; });
   var recent = sd.list.filter(function (e) { return e.end <= now && e.start.slice(0, 10) >= ago30; });
   var month = sd.list.filter(function (e) { return e.start.slice(0, 7) === mon; });
   var monthDone = month.filter(function (e) { return e.end <= now; });
-  return { up: up, next14: next14, h14: tot(next14), recent: recent, hRecent: tot(recent), month: month, hMonth: tot(month), hMonthDone: tot(monthDone), now: now };
+  return { up: up, week: week, hWeek: tot(week), hWeekDone: tot(week.filter(function (e) { return e.end <= now; })), weekLeft: weekLeft, hWeekLeft: tot(weekLeft), weekLabel: dlabel(mon0).slice(4) + '–' + dlabel(sun0).slice(4), recent: recent, hRecent: tot(recent), month: month, hMonth: tot(month), hMonthDone: tot(monthDone), now: now };
 }
 function shiftRow(e, now) {
   var live = e.start <= now && e.end > now;
@@ -1317,10 +1320,10 @@ function shiftsSection() {
   if (!sd || !sd.connected) return MODE === 'mock' ? '' : '<button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(openShiftSettings) + '><div class="row"><div><div class="label" style="margin:0">Work shifts</div><div class="muted" style="margin-top:4px">Connect your Rippling schedule to see upcoming shifts and expected pay</div></div><div class="muted">›</div></div></button>';
   var st = shiftStats(), h = '<div class="section">Work shifts</div>';
   if (sd.error) h += '<div class="card"><div class="muted">Couldn’t load your shifts: ' + esc(sd.error) + '</div></div>';
-  h += '<div class="grid2"><div class="card"><div class="label">Next 2 weeks</div><div class="big">' + hrs(st.h14) + '</div><div class="sub">' + st.next14.length + ' shift' + (st.next14.length === 1 ? '' : 's') + (hourlyRate() ? ' · ' + estPay(st.h14) : '') + '</div></div>' +
-    '<div class="card"><div class="label">' + D.monthly[currentMonthIdx()].name + '</div><div class="big">' + hrs(st.hMonth) + '</div><div class="sub">' + hrs(st.hMonthDone) + ' worked' + (hourlyRate() ? ' · ' + estPay(st.hMonth) : '') + '</div></div></div>';
+  h += '<div class="grid2"><div class="card"><div class="label">This week · ' + st.weekLabel + '</div><div class="big">' + hrs(st.hWeek) + '</div><div class="sub">' + hrs(st.hWeekDone) + ' worked · ' + st.week.length + ' shift' + (st.week.length === 1 ? '' : 's') + '</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + estPay(st.hWeek, true) + '</div>' : '') + '</div>' +
+    '<div class="card"><div class="label">' + D.monthly[currentMonthIdx()].name + '</div><div class="big">' + hrs(st.hMonth) + '</div><div class="sub">' + hrs(st.hMonthDone) + ' worked</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + estPay(st.hMonth, true) + '</div>' : '') + '</div></div>';
   h += '<div class="card"><div class="label">Upcoming</div>' + (st.up.length ? '<div class="list">' + st.up.slice(0, 8).map(function (e) { return shiftRow(e, st.now); }).join('') + '</div>' : '<div class="muted">No shifts scheduled yet</div>') +
-    '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + estPay(st.hRecent) : '') + '</div>' +
+    '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + estPay(st.hRecent, true) : '') + '</div>' +
     (hourlyRate() ? '' : '<button class="btn block" style="margin-top:10px" ' + on(openShiftSettings) + '>Add your hourly rate to see pay</button>') +
     (hourlyRate() ? '<div class="muted" style="margin-top:8px">Pay shown: ' + payBasis() + '</div>' : '') +
     '<div class="muted" style="margin-top:8px;cursor:pointer" ' + on(openShiftSettings) + '>From Rippling' + (sd.fetched ? ' · checked ' + esc(sd.fetched) : '') + ' · Shift settings ›</div></div>';
@@ -1328,11 +1331,11 @@ function shiftsSection() {
 }
 function nextShiftCard() {
   var st = shiftStats(); if (!st || !st.up.length) return '';
-  var e = st.up[0], live = e.start <= st.now, more = st.next14.length - 1;
+  var e = st.up[0], live = e.start <= st.now, more = st.weekLeft.filter(function (x) { return x !== e; }).length;
   return '<div class="card" style="cursor:pointer" ' + on(function () { go('income'); }) + '><div class="row"><div class="label">' + (live ? 'On shift now' : 'Next shift') + '</div><div class="muted">' + esc(e.title) + ' ›</div></div>' +
     '<div class="big">' + (live ? 'Until ' + clock(e.end) : shiftDay(e) + ' · ' + clock(e.start)) + '</div>' +
-    '<div class="sub">' + (live ? 'Started ' + clock(e.start) : 'Until ' + clock(e.end)) + ' · ' + hrs(e.hours) + (hourlyRate() ? ' · ' + estPay(e.hours) : '') + '</div>' +
-    (more > 0 ? '<div class="muted" style="margin-top:6px">+' + more + ' more in the next 2 weeks · ' + hrs(st.h14) + ' total' + (hourlyRate() ? ' · ' + estPay(st.h14) : '') + '</div>' : '') + '</div>';
+    '<div class="sub">' + (live ? 'Started ' + clock(e.start) : 'Until ' + clock(e.end)) + ' · ' + hrs(e.hours) + (hourlyRate() ? ' · ' + estPay(e.hours, true) : '') + '</div>' +
+    (st.week.length ? '<div class="muted" style="margin-top:6px">This week: ' + hrs(st.hWeek) + (more > 0 ? ' (' + more + ' more shift' + (more === 1 ? '' : 's') + ' after this)' : '') + (hourlyRate() ? ' · ' + estPay(st.hWeek, true) : '') + '</div>' : '') + '</div>';
 }
 function openShiftSettings() {
   var sd = D.shifts || {}, h = '<h2>Work shifts</h2>';
