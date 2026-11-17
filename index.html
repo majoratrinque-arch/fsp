@@ -843,6 +843,7 @@ if (typeof module !== 'undefined') module.exports = FSP;
     clearSchedule: function (s) { state = FSP.clearSchedule(state, s); },
     deleteRule: function (i) { state = FSP.deleteRule(state, i); },
     setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null;
+      if ('taxRate' in p) state.settings.taxRate = Number(p.taxRate) > 0 && Number(p.taxRate) < 100 ? Number(p.taxRate) : null;
       if ('hourlyRate' in p) state.settings.hourlyRate = Number(p.hourlyRate) > 0 ? Number(p.hourlyRate) : null; }
   };
   function runner(ok, fail) {
@@ -1288,7 +1289,10 @@ function nowStr() { var n = new Date(); function p(x) { return (x < 10 ? '0' : '
 function addDaysStr(d, k) { var x = dt(d); x.setUTCDate(x.getUTCDate() + k); return x.toISOString().slice(0, 10); }
 function clock(s) { var h = +s.slice(11, 13), m = s.slice(14, 16); return ((h % 12) || 12) + (m === '00' ? '' : ':' + m) + (h < 12 ? ' AM' : ' PM'); }
 function hrs(h) { h = Math.round(h * 10) / 10; return h + ' hr' + (h === 1 ? '' : 's'); }
-function estPay(h) { var r = hourlyRate(); return r ? '≈ ' + money(h * r, 0) : ''; }
+function taxRate() { return D.settings && D.settings.taxRate || 0; }
+// Take-home: hours × rate, minus the share withheld for taxes.
+function estPay(h) { var r = hourlyRate(); return r ? '≈ ' + money(h * r * (1 - taxRate() / 100), 0) : ''; }
+function payBasis() { return hourlyRate() ? money(hourlyRate()) + '/hr' + (taxRate() ? ' − ' + taxRate() + '% tax = take-home' : ' before tax') : ''; }
 function shiftDay(e) { var d = e.start.slice(0, 10); return d === D.today ? 'Today' : d === addDaysStr(D.today, 1) ? 'Tomorrow' : dlabel(d); }
 function shiftWhen(e) { return clock(e.start) + ' – ' + clock(e.end); }
 function shiftStats() {
@@ -1318,6 +1322,7 @@ function shiftsSection() {
   h += '<div class="card"><div class="label">Upcoming</div>' + (st.up.length ? '<div class="list">' + st.up.slice(0, 8).map(function (e) { return shiftRow(e, st.now); }).join('') + '</div>' : '<div class="muted">No shifts scheduled yet</div>') +
     '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + estPay(st.hRecent) : '') + '</div>' +
     (hourlyRate() ? '' : '<button class="btn block" style="margin-top:10px" ' + on(openShiftSettings) + '>Add your hourly rate to see pay</button>') +
+    (hourlyRate() ? '<div class="muted" style="margin-top:8px">Pay shown: ' + payBasis() + '</div>' : '') +
     '<div class="muted" style="margin-top:8px;cursor:pointer" ' + on(openShiftSettings) + '>From Rippling' + (sd.fetched ? ' · checked ' + esc(sd.fetched) : '') + ' · Shift settings ›</div></div>';
   return h;
 }
@@ -1334,14 +1339,18 @@ function openShiftSettings() {
   h += '<div class="muted">' + (sd.connected ? '✓ Connected to your Rippling schedule.' : 'In Rippling, open your schedule and copy the calendar sync link (starts with webcal://).') + '</div>';
   h += '<div class="field"><span>' + (sd.connected ? 'Replace calendar link' : 'Calendar link') + '</span><input class="input" id="shUrl" type="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="webcal://app.rippling.com/…"></div>';
   h += '<div class="field"><span>Hourly rate (for pay estimates)</span><input class="input money" id="shRate" inputmode="decimal" placeholder="$0.00" value="' + (hourlyRate() || '') + '"></div>';
+  h += '<div class="field"><span>Taxes withheld (%)</span><input class="input" id="shTax" inputmode="decimal" placeholder="e.g. 12" value="' + (taxRate() || '') + '"></div>';
+  h += '<div class="muted" style="margin-bottom:10px">Not sure? On a paystub, divide total taxes by gross pay. Example: $18 taxes on a $150 check is 12%. Leave it blank to see pay before tax.</div>';
   h += '<div class="muted">The link is saved in your Google script only, never on the app’s website or this phone.</div>';
   h += '<button class="btn primary block" style="margin-top:14px" ' + on(function () {
     var url = document.getElementById('shUrl').value.trim(), rv = String(document.getElementById('shRate').value).replace(/[$,\s]/g, ''), r = rv === '' ? null : parseFloat(rv);
     if (rv !== '' && !(r > 0)) return toast('Enter a rate like 15.50');
-    var patch = { hourlyRate: r };
+    var tv = String(document.getElementById('shTax').value).replace(/[%\s]/g, ''), tx = tv === '' ? null : parseFloat(tv);
+    if (tv !== '' && !(tx >= 0 && tx < 100)) return toast('Enter a tax percent like 12');
+    var patch = { hourlyRate: r, taxRate: tx };
     if (url) patch.shiftsUrl = url;
     toast('Saving…');
-    act('setSettings', [patch], function () { toast(url ? 'Shifts connected' : 'Saved'); }, url ? null : function (d) { d.settings = d.settings || {}; d.settings.hourlyRate = r; });
+    act('setSettings', [patch], function () { toast(url ? 'Shifts connected' : 'Saved'); }, url ? null : function (d) { d.settings = d.settings || {}; d.settings.hourlyRate = r; d.settings.taxRate = tx > 0 ? tx : null; });
   }) + '>Save</button>';
   if (sd.connected) h += '<button class="btn block" style="margin-top:8px" ' + on(function () {
     if (!confirm('Disconnect your work shifts?')) return; act('setSettings', [{ shiftsUrl: '' }], function () { toast('Shifts disconnected'); }); }) + '>Disconnect shifts</button>';
@@ -1356,7 +1365,7 @@ function openSettings() {
     '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
     '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
   h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
-  h += '<div class="field"><span>Work shifts</span><button class="btn block" style="text-align:left;margin:0" ' + on(openShiftSettings) + '>' + (D.shifts && D.shifts.connected ? 'Rippling · connected' + (hourlyRate() ? ' · ' + money(hourlyRate()) + '/hr' : '') : 'Not connected') + ' ›</button></div>';
+  h += '<div class="field"><span>Work shifts</span><button class="btn block" style="text-align:left;margin:0" ' + on(openShiftSettings) + '>' + (D.shifts && D.shifts.connected ? 'Rippling · connected' + (hourlyRate() ? ' · ' + money(hourlyRate()) + '/hr' + (taxRate() ? ', ' + taxRate() + '% tax' : '') : '') : 'Not connected') + ' ›</button></div>';
   h += '<label class="chk"><input type="checkbox"' + (store('fsp-checkin-off') === '1' ? '' : ' checked') + ' onchange="store(\'fsp-checkin-off\', this.checked ? null : \'1\')"> Ask “did you get paid today?” on paydays</label>';
   if (MODE === 'phone') h += '<button class="btn block" style="margin-top:18px" ' + on(function () {
     if (!confirm('Disconnect this phone from your sheet?')) return; store(CONN, null); store(CACHE, null); history.replaceState(null, '', location.pathname); D = null; closeSheet(); setupScreen(); }) + '>Disconnect this phone</button>';
