@@ -678,11 +678,42 @@ var FSP = (function () {
     return state;
   }
 
+  /** Calendar feed (.ics, e.g. Rippling shifts) → [{uid, title, notes, start, end, hours}], times as local 'YYYY-MM-DDTHH:MM'.
+   *  toLocal(dateObj) converts UTC ("Z") times; TZID times are taken as written. */
+  function parseIcs(text, toLocal) {
+    var lines = String(text || '').replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n'), out = [], ev = null;
+    function unesc(v) { return v.replace(/\\n/gi, '\n').replace(/\\([,;\\])/g, '$1').trim(); }
+    function when(prop, v) {
+      var m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/.exec(v.trim()); if (!m) return null;
+      if (m[7] && toLocal) return toLocal(new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])));
+      return m[1] + '-' + m[2] + '-' + m[3] + 'T' + (m[4] || '00') + ':' + (m[5] || '00');
+    }
+    lines.forEach(function (ln) {
+      if (ln === 'BEGIN:VEVENT') { ev = {}; return; }
+      if (ln === 'END:VEVENT') { if (ev && ev.start) out.push(ev); ev = null; return; }
+      if (!ev) return;
+      var i = ln.indexOf(':'); if (i < 0) return;
+      var prop = ln.slice(0, i).split(';')[0].toUpperCase(), v = ln.slice(i + 1);
+      if (prop === 'SUMMARY') ev.title = unesc(v);
+      else if (prop === 'DESCRIPTION') ev.notes = unesc(v).replace(/^Notes:\s*/i, '');
+      else if (prop === 'UID') ev.uid = v.trim();
+      else if (prop === 'DTSTART') ev.start = when(prop, v);
+      else if (prop === 'DTEND') ev.end = when(prop, v);
+      else if (prop === 'STATUS' && /CANCELLED/i.test(v)) ev.cancelled = true;
+    });
+    function mins(s) { var d = Date.UTC(+s.slice(0, 4), s.slice(5, 7) - 1, +s.slice(8, 10)); return d / 6e4 + (+s.slice(11, 13)) * 60 + (+s.slice(14, 16)); }
+    return out.filter(function (e) { return !e.cancelled; }).map(function (e) {
+      var end = e.end || e.start;
+      return { uid: e.uid || e.start, title: e.title || 'Shift', notes: e.notes || '', start: e.start, end: end,
+        hours: Math.max(0, Math.round((mins(end) - mins(e.start)) / 60 * 100) / 100) };
+    }).sort(function (a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; });
+  }
+
   return {
     MONTHS: MONTHS, resolve: resolve, applyAnswer: applyAnswer, setSchedule: setSchedule, clearSchedule: clearSchedule,
     deleteRule: deleteRule, detectPattern: detectPattern, describePattern: describePattern, parseCycle: parseCycle,
     expectedIn: expectedIn, isPayDate: isPayDate, iso: iso, fmt: fmt, setIncomeDate: setIncomeDate, firstWeekday: firstWeekday,
-    findCycleSpan: findCycleSpan, holidays: holidays, srcKey: srcKey, lastPayDate: lastPayDate, fmtLong: fmtLong
+    findCycleSpan: findCycleSpan, holidays: holidays, srcKey: srcKey, lastPayDate: lastPayDate, fmtLong: fmtLong, parseIcs: parseIcs
   };
 })();
 
@@ -756,16 +787,26 @@ if (typeof module !== 'undefined') module.exports = FSP;
   var mkEnds = [5880, 6040, 5950, 5610, 6150, 6420, 6380, 6230, 6440, 6400, 6560, null, null];
   function market() { var cur = +TODAY.slice(5, 7) - 1, ends = mkEnds.map(function (v, i) { return i <= cur ? v : null; }); ends[cur + 1] = null;
     return { index: 'S&P 500', latest: { d: TODAY, c: 6612 }, monthEnd: ends }; }
+  // Made-up swim-instructor shifts around today.
+  function sampleShifts() {
+    var list = [], base = Date.UTC(Y, +TODAY.slice(5, 7) - 1, +TODAY.slice(8, 10));
+    for (var k = -35; k <= 21; k++) {
+      var d = new Date(base + k * 864e5), wd = d.getUTCDay(), day = iso(d);
+      if (wd === 6 || wd === 0) list.push({ uid: 's' + k, title: 'Swim Instructor (Pool Staff)', notes: '', start: day + 'T08:40', end: day + 'T13:45', hours: 5.08 });
+      if (wd === 3 && k % 2) list.push({ uid: 'w' + k, title: 'Workshops/ In-Service', notes: '', start: day + 'T16:30', end: day + 'T18:30', hours: 2 });
+    }
+    return { connected: true, list: list, fetched: 'just now' };
+  }
   function dashboard() {
     var a = FSP.resolve(model, state); a.year = Y;
     return {
-      sample: true, apiVersion: 4, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
+      sample: true, apiVersion: 5, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
       netWorth: { accounts: [{ name: 'Chase', type: 'cash', values: nwVals.chase }, { name: 'Fidelity (Rounds)', type: 'investments', values: nwVals.fid }],
         total: nwVals.chase.map(function (v, i) { return v == null ? null : v + nwVals.fid[i]; }), contributions: nwVals.contrib, dividends: nwVals.div, investPct: nwVals.pct, lastMonth: 8 },
       overview: { quarters: [{ label: 'Q1', goal: 689.01 }, { label: 'Q2', goal: 964.62 }, { label: 'Q3', goal: 3215.39 }, { label: 'Q4', goal: 1929.23 }], yearGoal: 6798.25,
         sourceNames: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'] },
       sources: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'],
-      market: market(), settings: state.settings || {},
+      market: market(), settings: state.settings || {}, shifts: sampleShifts(),
       monthly: months.map(function (mo) {
         var m = { name: mo.name, income: 0, expenses: 0, bySource: {}, byCategory: {}, goals: { Invest: .65, Spending: .15, Saving: .2 } };
         mo.rows.forEach(function (r) { var inc = +r.incomeAmount || 0, exp = +r.expenseAmount || 0;
@@ -801,7 +842,8 @@ if (typeof module !== 'undefined') module.exports = FSP;
     setSchedule: function (s, t, d, d2, h) { state = FSP.setSchedule(state, s, t, d, d2, h); },
     clearSchedule: function (s) { state = FSP.clearSchedule(state, s); },
     deleteRule: function (i) { state = FSP.deleteRule(state, i); },
-    setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null; }
+    setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null;
+      if ('hourlyRate' in p) state.settings.hourlyRate = Number(p.hourlyRate) > 0 ? Number(p.hourlyRate) : null; }
   };
   function runner(ok, fail) {
     var o = { withSuccessHandler: function (f) { return runner(f, fail); }, withFailureHandler: function (f) { return runner(ok, f); } };
@@ -815,7 +857,7 @@ if (typeof module !== 'undefined') module.exports = FSP;
 </script>
 <script>
 // ---------- connection: inside Google (google.script.run), demo mock, or home-screen app (private key) ----------
-var CONN = 'fsp-connection-v1', CACHE, NEED_API = 4;
+var CONN = 'fsp-connection-v1', CACHE, NEED_API = 5;
 ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) { document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false }); });
 document.addEventListener('touchmove', function (e) { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
@@ -1238,6 +1280,74 @@ function openCheckin(due) {
   openSheet(h);
 }
 
+// ---------- work shifts (Rippling calendar feed, read by your Google script) ----------
+function shiftData() { return D && D.shifts && D.shifts.connected ? D.shifts : null; }
+function hourlyRate() { return D.settings && D.settings.hourlyRate || null; }
+function nowStr() { var n = new Date(); function p(x) { return (x < 10 ? '0' : '') + x; }
+  return n.getFullYear() + '-' + p(n.getMonth() + 1) + '-' + p(n.getDate()) + 'T' + p(n.getHours()) + ':' + p(n.getMinutes()); }
+function addDaysStr(d, k) { var x = dt(d); x.setUTCDate(x.getUTCDate() + k); return x.toISOString().slice(0, 10); }
+function clock(s) { var h = +s.slice(11, 13), m = s.slice(14, 16); return ((h % 12) || 12) + (m === '00' ? '' : ':' + m) + (h < 12 ? ' AM' : ' PM'); }
+function hrs(h) { h = Math.round(h * 10) / 10; return h + ' hr' + (h === 1 ? '' : 's'); }
+function estPay(h) { var r = hourlyRate(); return r ? '≈ ' + money(h * r, 0) : ''; }
+function shiftDay(e) { var d = e.start.slice(0, 10); return d === D.today ? 'Today' : d === addDaysStr(D.today, 1) ? 'Tomorrow' : dlabel(d); }
+function shiftWhen(e) { return clock(e.start) + ' – ' + clock(e.end); }
+function shiftStats() {
+  var sd = shiftData(); if (!sd || !sd.list) return null;
+  var now = nowStr(), in14 = addDaysStr(D.today, 14) + 'T23:59', ago30 = addDaysStr(D.today, -30), mon = D.today.slice(0, 7);
+  var up = sd.list.filter(function (e) { return e.end > now; });
+  function tot(a) { return sum(a.map(function (e) { return e.hours; })); }
+  var next14 = up.filter(function (e) { return e.start <= in14; });
+  var recent = sd.list.filter(function (e) { return e.end <= now && e.start.slice(0, 10) >= ago30; });
+  var month = sd.list.filter(function (e) { return e.start.slice(0, 7) === mon; });
+  var monthDone = month.filter(function (e) { return e.end <= now; });
+  return { up: up, next14: next14, h14: tot(next14), recent: recent, hRecent: tot(recent), month: month, hMonth: tot(month), hMonthDone: tot(monthDone), now: now };
+}
+function shiftRow(e, now) {
+  var live = e.start <= now && e.end > now;
+  return '<div class="row"><span>' + (live ? '<b style="color:var(--accent)">Now</b>' : shiftDay(e)) + ' · ' + esc(e.title) +
+    '<br><span class="muted">' + shiftWhen(e) + (e.notes ? ' · ' + esc(e.notes) : '') + '</span></span>' +
+    '<span class="num" style="white-space:nowrap;text-align:right">' + hrs(e.hours) + (hourlyRate() ? '<br><span class="muted">' + estPay(e.hours) + '</span>' : '') + '</span></div>';
+}
+function shiftsSection() {
+  var sd = D.shifts;
+  if (!sd || !sd.connected) return MODE === 'mock' ? '' : '<button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(openShiftSettings) + '><div class="row"><div><div class="label" style="margin:0">Work shifts</div><div class="muted" style="margin-top:4px">Connect your Rippling schedule to see upcoming shifts and expected pay</div></div><div class="muted">›</div></div></button>';
+  var st = shiftStats(), h = '<div class="section">Work shifts</div>';
+  if (sd.error) h += '<div class="card"><div class="muted">Couldn’t load your shifts: ' + esc(sd.error) + '</div></div>';
+  h += '<div class="grid2"><div class="card"><div class="label">Next 2 weeks</div><div class="big">' + hrs(st.h14) + '</div><div class="sub">' + st.next14.length + ' shift' + (st.next14.length === 1 ? '' : 's') + (hourlyRate() ? ' · ' + estPay(st.h14) : '') + '</div></div>' +
+    '<div class="card"><div class="label">' + D.monthly[currentMonthIdx()].name + '</div><div class="big">' + hrs(st.hMonth) + '</div><div class="sub">' + hrs(st.hMonthDone) + ' worked' + (hourlyRate() ? ' · ' + estPay(st.hMonth) : '') + '</div></div></div>';
+  h += '<div class="card"><div class="label">Upcoming</div>' + (st.up.length ? '<div class="list">' + st.up.slice(0, 8).map(function (e) { return shiftRow(e, st.now); }).join('') + '</div>' : '<div class="muted">No shifts scheduled yet</div>') +
+    '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + estPay(st.hRecent) : '') + '</div>' +
+    (hourlyRate() ? '' : '<button class="btn block" style="margin-top:10px" ' + on(openShiftSettings) + '>Add your hourly rate to see pay</button>') +
+    '<div class="muted" style="margin-top:8px;cursor:pointer" ' + on(openShiftSettings) + '>From Rippling' + (sd.fetched ? ' · checked ' + esc(sd.fetched) : '') + ' · Shift settings ›</div></div>';
+  return h;
+}
+function nextShiftCard() {
+  var st = shiftStats(); if (!st || !st.up.length) return '';
+  var e = st.up[0], live = e.start <= st.now, more = st.next14.length - 1;
+  return '<div class="card" style="cursor:pointer" ' + on(function () { go('income'); }) + '><div class="row"><div class="label">' + (live ? 'On shift now' : 'Next shift') + '</div><div class="muted">' + esc(e.title) + ' ›</div></div>' +
+    '<div class="big">' + (live ? 'Until ' + clock(e.end) : shiftDay(e) + ' · ' + clock(e.start)) + '</div>' +
+    '<div class="sub">' + (live ? 'Started ' + clock(e.start) : 'Until ' + clock(e.end)) + ' · ' + hrs(e.hours) + (hourlyRate() ? ' · ' + estPay(e.hours) : '') + '</div>' +
+    (more > 0 ? '<div class="muted" style="margin-top:6px">+' + more + ' more in the next 2 weeks · ' + hrs(st.h14) + ' total' + (hourlyRate() ? ' · ' + estPay(st.h14) : '') + '</div>' : '') + '</div>';
+}
+function openShiftSettings() {
+  var sd = D.shifts || {}, h = '<h2>Work shifts</h2>';
+  h += '<div class="muted">' + (sd.connected ? '✓ Connected to your Rippling schedule.' : 'In Rippling, open your schedule and copy the calendar sync link (starts with webcal://).') + '</div>';
+  h += '<div class="field"><span>' + (sd.connected ? 'Replace calendar link' : 'Calendar link') + '</span><input class="input" id="shUrl" type="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="webcal://app.rippling.com/…"></div>';
+  h += '<div class="field"><span>Hourly rate (for pay estimates)</span><input class="input money" id="shRate" inputmode="decimal" placeholder="$0.00" value="' + (hourlyRate() || '') + '"></div>';
+  h += '<div class="muted">The link is saved in your Google script only, never on the app’s website or this phone.</div>';
+  h += '<button class="btn primary block" style="margin-top:14px" ' + on(function () {
+    var url = document.getElementById('shUrl').value.trim(), rv = String(document.getElementById('shRate').value).replace(/[$,\s]/g, ''), r = rv === '' ? null : parseFloat(rv);
+    if (rv !== '' && !(r > 0)) return toast('Enter a rate like 15.50');
+    var patch = { hourlyRate: r };
+    if (url) patch.shiftsUrl = url;
+    toast('Saving…');
+    act('setSettings', [patch], function () { toast(url ? 'Shifts connected' : 'Saved'); }, url ? null : function (d) { d.settings = d.settings || {}; d.settings.hourlyRate = r; });
+  }) + '>Save</button>';
+  if (sd.connected) h += '<button class="btn block" style="margin-top:8px" ' + on(function () {
+    if (!confirm('Disconnect your work shifts?')) return; act('setSettings', [{ shiftsUrl: '' }], function () { toast('Shifts disconnected'); }); }) + '>Disconnect shifts</button>';
+  openSheet(h);
+}
+
 // ---------- settings ----------
 function setData(v) { store('fsp-data', v); location.reload(); }
 function openSettings() {
@@ -1246,6 +1356,7 @@ function openSettings() {
     '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
     '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
   h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
+  h += '<div class="field"><span>Work shifts</span><button class="btn block" style="text-align:left;margin:0" ' + on(openShiftSettings) + '>' + (D.shifts && D.shifts.connected ? 'Rippling · connected' + (hourlyRate() ? ' · ' + money(hourlyRate()) + '/hr' : '') : 'Not connected') + ' ›</button></div>';
   h += '<label class="chk"><input type="checkbox"' + (store('fsp-checkin-off') === '1' ? '' : ' checked') + ' onchange="store(\'fsp-checkin-off\', this.checked ? null : \'1\')"> Ask “did you get paid today?” on paydays</label>';
   if (MODE === 'phone') h += '<button class="btn block" style="margin-top:18px" ' + on(function () {
     if (!confirm('Disconnect this phone from your sheet?')) return; store(CONN, null); store(CACHE, null); history.replaceState(null, '', location.pathname); D = null; closeSheet(); setupScreen(); }) + '>Disconnect this phone</button>';
@@ -1273,6 +1384,7 @@ function screenHome() {
       '<div class="muted" style="margin-top:6px">On pace for ' + money(pace, 0) + ' · the line marks today' +
       (!g.custom && ytd >= g.base ? ' · <b style="color:var(--accent)">Goal hit — tap to set a new one</b>' : '') + '</div></div>';
   }
+  h += nextShiftCard();
   var sch = D.assistant.schedules.filter(function (s) { return s.next; }).sort(function (a, b) { return a.next < b.next ? -1 : a.next > b.next ? 1 : 0; });
   if (sch.length) {
     var soon = sch.filter(function (s) { return s.next === sch[0].next; });
@@ -1300,6 +1412,7 @@ function screenIncome() {
   if (g.goal) h += '<div class="sub">' + pct(ytd / g.goal) + ' of your ' + money(g.goal, 0) + ' goal' + (g.custom && g.base && ytd >= g.base ? ' · first goal ' + money(g.base, 0) + ' ✓' : '') +
     ' · <a href="#" style="color:var(--accent);font-weight:600" ' + on(function (ev) { ev.preventDefault(); openGoal(); }) + '>change</a></div>';
   h += '<div class="chart" id="incChart"></div>' + (incomeView === 'ytd' && g.goal ? legend([['Earned', 'var(--s1)'], ['Pace for ' + money(g.goal, 0), '', true]]) : '') + '</div>';
+  h += shiftsSection();
   h += '<div class="card"><div class="label">By source</div>';
   h += srcs.length ? '<div class="list">' + srcs.map(function (s) {
     var cnt = D.monthly.reduce(function (c, m) { return c + (m.bySource[s] ? 1 : 0); }, 0), sc = schedFor(s);
