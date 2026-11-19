@@ -721,7 +721,8 @@ var FSP = (function () {
 if (typeof module !== 'undefined') module.exports = FSP;
 
 // Sample-data backend for App.html (Settings → Data → Sample data, and demo-app.html).
-// Same calls as Dashboard.gs; everything stays in memory. Net worth numbers are FSP Template's; the rest is made up.
+// Same calls as Dashboard.gs. Every name and number here is made up, except your real shifts, hourly rate and tax rate,
+// which the app copies from your last real load (localStorage 'fsp-real-extras'). Sample settings are kept on this device.
 (function () {
   var Y = 2026, M = FSP.MONTHS, TODAY = null, months, model, state, ready = false;
   function iso(d) { return d.toISOString().slice(0, 10); }
@@ -733,12 +734,12 @@ if (typeof module !== 'undefined') module.exports = FSP;
     var cyc = [[1, 3], [4, 7], [8, 11], [12, 15], [16, 19], [20, 23], [24, 27], [28, 31]];
     var seed = 7; function rnd() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
     var spend = ['Groceries', 'Gas', 'Eating out', 'Phone', 'Gym', 'Gifts'];
-    // Goldfish + Sportsmen's every Friday, Allowance every Monday, Coaching now and then.
+    // Main job + Weekend gig every Friday, Family every Monday, Tutoring now and then.
     function itemsFor(m, d) {
       var wd = new Date(Date.UTC(Y, m, d)).getUTCDay(), out = [];
-      if (wd === 5) { out.push({ inc: ['Goldfish', Math.round(80 + rnd() * 25)] }); if (rnd() < .85) out.push({ inc: ["Sportsmen's", Math.round(35 + rnd() * 20)] }); }
-      if (wd === 1) out.push({ inc: ['Allowance', 20] });
-      if (d === 18 && m % 2 === 0) out.push({ inc: ['Coaching', 60] });
+      if (wd === 5) { out.push({ inc: ['Main job', Math.round(110 + rnd() * 40)] }); if (rnd() < .6) out.push({ inc: ['Weekend gig', Math.round(25 + rnd() * 30)] }); }
+      if (wd === 1) out.push({ inc: ['Family', 15] });
+      if (d === 18 && m % 2 === 0) out.push({ inc: ['Tutoring', 45] });
       return out;
     }
     months = M.map(function (name, mi) {
@@ -749,10 +750,8 @@ if (typeof module !== 'undefined') module.exports = FSP;
           // leave today's paychecks out so "did you get paid today?" has something to ask
           for (var d = c[0]; d <= end; d++) if (mi < curM || d < curD) itemsFor(mi, d).forEach(function (x) { items.push(x); });
           if (rnd() < 0.8) items.push({ exp: [spend[Math.floor(rnd() * spend.length)], Math.round(15 + rnd() * 60), 'Spending'] });
-          if (ci === 2) items.push({ exp: ['Fidelity', mi % 2 ? 300 : 200, 'Investment'] });
-          if (ci === 5) items.push({ exp: ['HYSA', 80, 'Savings'] });
           if (mi === 6 && ci === 3) items.push({ exp: ['New laptop', 640, 'Big Purchases'] });
-          if (mi === 9 && ci === 5) items.push({ inc: ['Goldfish', 40] }); // an extra check off-schedule
+          if (mi === 9 && ci === 5) items.push({ inc: ['Main job', 40] }); // an extra check off-schedule
         }
         if (!items.length) items.push({});
         items.forEach(function (it, k) {
@@ -764,12 +763,13 @@ if (typeof module !== 'undefined') module.exports = FSP;
       return { name: name, monthIdx: mi, rows: rows };
     });
     model = { year: Y, today: TODAY, months: months };
-    state = { year: Y, settings: {} };
-    [['Goldfish', 'weekly', 5, true], ["Sportsmen's", 'weekly', 5, true], ['Allowance', 'weekly', 1, false], ['Other', 'random'], ['Coaching', 'random']].forEach(function (d) {
+    var saved = {}; try { saved = JSON.parse(localStorage.getItem('fsp-sample-settings') || '{}'); } catch (e) {}
+    state = { year: Y, settings: saved };
+    [['Main job', 'weekly', 5, true], ['Weekend gig', 'weekly', 5, false], ['Family', 'weekly', 1, false], ['Other', 'random'], ['Tutoring', 'random']].forEach(function (d) {
       state = FSP.setSchedule(state, d[0], d[1], d[1] === 'random' ? '2026-01-01' : FSP.firstWeekday(Y, d[2]), null, !!d[3]);
     });
     // Pretend earlier questions were answered; keep a couple so the demo shows them.
-    function keep(q) { return (q.type === 'holiday' && q.sheet === 'July' && q.source === 'Goldfish') || q.type === 'offSchedule'; }
+    function keep(q) { return (q.type === 'holiday' && q.sheet === 'July' && q.source === 'Main job') || q.type === 'offSchedule'; }
     for (var pass = 0; pass < 20; pass++) {
       var qs = FSP.resolve(model, state).questions.filter(function (x) { return !keep(x); });
       if (!qs.length) break;
@@ -777,12 +777,12 @@ if (typeof module !== 'undefined') module.exports = FSP;
     }
   }
 
-  var nwVals = {
-    chase: [3993.34, 4206.56, 3730.53, 3829.28, 3905.33, 3769.15, 4196.94, 4928.5, 5363.03, null, null, null],
-    fid: [6203.21, 6694.7, 7342.29, 8718.93, 10304.67, 10763.11, 11392.52, 12788.11, 13227.94, null, null, null],
-    contrib: [500, 500, 1000, 500, 1000, 500, 1000, 1000, 500, null, null, null],
-    div: [1.1, 0.5, 3.4, 55.98, 0.86, 12.59, 18.12, 1.13, 8.23, null, null, null],
-    pct: [null, -0.00137187037, -0.05264014818, 0.1193959923, 0.0671802618, -0.004033122846, -0.03443149796, 0.03472366079, -0.004705151895, null, null, null]
+  var nwVals = { // made up
+    chase: [1850, 2010, 1795, 1930, 2240, 2465, 2810, 3120, 2980, null, null, null],
+    fid: [3100, 3420, 3610, 3540, 4050, 4480, 4720, 5260, 5610, null, null, null],
+    contrib: [300, 300, 300, 600, 300, 300, 300, 600, 300, null, null, null],
+    div: [0.8, 0.4, 2.1, 6.3, 0.9, 4.2, 1.5, 0.7, 5.6, null, null, null],
+    pct: [null, 0.012, -0.031, -0.068, 0.054, 0.028, -0.006, 0.041, 0.011, null, null, null]
   };
   // Made-up S&P 500 month-end closes (index 0 = last December) and a latest close.
   var mkEnds = [5880, 6040, 5950, 5610, 6150, 6420, 6380, 6230, 6440, 6400, 6560, null, null];
@@ -798,16 +798,20 @@ if (typeof module !== 'undefined') module.exports = FSP;
     }
     return { connected: true, list: list, fetched: 'just now' };
   }
+  function real() { try { return JSON.parse(localStorage.getItem('fsp-real-extras') || '{}') || {}; } catch (e) { return {}; } }
+  // Your real rate and tax show in sample mode unless you change them there.
+  function settingsOut() { var r = real(), o = {}; Object.keys(state.settings || {}).forEach(function (k) { o[k] = state.settings[k]; });
+    if (!('hourlyRate' in o) && r.hourlyRate) o.hourlyRate = r.hourlyRate; if (!('taxRate' in o) && r.taxRate) o.taxRate = r.taxRate; return o; }
   function dashboard() {
     var a = FSP.resolve(model, state); a.year = Y;
     return {
       sample: true, apiVersion: 5, updated: 'just now', today: TODAY, months: M.map(function (m) { return m.slice(0, 3); }),
-      netWorth: { accounts: [{ name: 'Chase', type: 'cash', values: nwVals.chase }, { name: 'Fidelity (Rounds)', type: 'investments', values: nwVals.fid }],
+      netWorth: { accounts: [{ name: 'Checking', type: 'cash', values: nwVals.chase }, { name: 'Brokerage', type: 'investments', values: nwVals.fid }],
         total: nwVals.chase.map(function (v, i) { return v == null ? null : v + nwVals.fid[i]; }), contributions: nwVals.contrib, dividends: nwVals.div, investPct: nwVals.pct, lastMonth: 8 },
-      overview: { quarters: [{ label: 'Q1', goal: 689.01 }, { label: 'Q2', goal: 964.62 }, { label: 'Q3', goal: 3215.39 }, { label: 'Q4', goal: 1929.23 }], yearGoal: 6798.25,
-        sourceNames: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'] },
-      sources: ['Goldfish', "Sportsmen's", 'Allowance', 'Coaching', 'Other'],
-      market: market(), settings: state.settings || {}, shifts: sampleShifts(),
+      overview: { quarters: [{ label: 'Q1', goal: 1400 }, { label: 'Q2', goal: 1700 }, { label: 'Q3', goal: 2300 }, { label: 'Q4', goal: 1600 }], yearGoal: 7000,
+        sourceNames: ['Main job', 'Weekend gig', 'Family', 'Tutoring', 'Other'] },
+      sources: ['Main job', 'Weekend gig', 'Family', 'Tutoring', 'Other'], shiftSource: 'Main job',
+      market: market(), settings: settingsOut(), shifts: real().shifts || sampleShifts(),
       monthly: months.map(function (mo) {
         var m = { name: mo.name, income: 0, expenses: 0, bySource: {}, byCategory: {}, goals: { Invest: .65, Spending: .15, Saving: .2 } };
         mo.rows.forEach(function (r) { var inc = +r.incomeAmount || 0, exp = +r.expenseAmount || 0;
@@ -846,7 +850,8 @@ if (typeof module !== 'undefined') module.exports = FSP;
     setSettings: function (p) { state.settings = state.settings || {}; if ('incomeGoal' in p) state.settings.incomeGoal = Number(p.incomeGoal) > 0 ? Number(p.incomeGoal) : null;
       if ('autoInvest' in p) state.settings.autoInvest = Number(p.autoInvest) >= 0 ? Number(p.autoInvest) : null;
       if ('taxRate' in p) state.settings.taxRate = Number(p.taxRate) > 0 && Number(p.taxRate) < 100 ? Number(p.taxRate) : null;
-      if ('hourlyRate' in p) state.settings.hourlyRate = Number(p.hourlyRate) > 0 ? Number(p.hourlyRate) : null; }
+      if ('hourlyRate' in p) state.settings.hourlyRate = Number(p.hourlyRate) > 0 ? Number(p.hourlyRate) : null;
+      try { localStorage.setItem('fsp-sample-settings', JSON.stringify(state.settings)); } catch (e) {} }
   };
   function runner(ok, fail) {
     var o = { withSuccessHandler: function (f) { return runner(f, fail); }, withFailureHandler: function (f) { return runner(ok, f); } };
@@ -924,7 +929,7 @@ var GOAL_KEY = { 'Invest': 'Investment', 'Spending': 'Spending', 'Saving': 'Savi
 function load(force) {
   if (!force) { try { var c = store(CACHE); if (c) { D = JSON.parse(c); render(); } } catch (e) {} }
   var r = document.getElementById('refresh'); if (r) r.textContent = 'Updating…';
-  call('getDashboard', [], function (d) { D = d; store(CACHE, JSON.stringify(d)); render(); maybeCheckin(); },
+  call('getDashboard', [], function (d) { D = d; store(CACHE, JSON.stringify(d)); afterLoad(); render(); maybeCheckin(); },
     function (err) {
       if (/NOT_CONNECTED/.test(err)) { store(CACHE, null); D = null; return setupScreen(); }
       if (!D) document.getElementById('app').innerHTML = '<div class="loading">' + esc(err) + '<br><br><button class="btn" onclick="load(true)">Try again</button></div>';
@@ -934,6 +939,7 @@ function load(force) {
 // Every change returns the whole dashboard. `optimistic(D)` updates the screen instantly while it saves.
 var QUEUE = Promise.resolve(), PENDING = [];
 function act(fn, args, after, optimistic) {
+  if (fn === 'setSettings' && MODE !== 'mock') backupSettings(args[0]);
   var op = { optimistic: optimistic };
   PENDING.push(op);
   if (optimistic) { optimistic(D); closeSheet(); render(); }
@@ -946,6 +952,27 @@ function act(fn, args, after, optimistic) {
   }); });
 }
 function assistant(fn, args, after) { act(fn, args, after); }
+// A copy of your settings stays on this phone. If the sheet ever comes back without one, it's quietly put back.
+var SET_KEYS = ['incomeGoal', 'hourlyRate', 'taxRate', 'autoInvest'];
+function backupSettings(patch) { var b = {}; try { b = JSON.parse(store('fsp-settings-backup') || '{}'); } catch (e) {}
+  SET_KEYS.forEach(function (k) { if (patch && k in patch) b[k] = patch[k] == null || patch[k] === '' ? null : +patch[k]; });
+  store('fsp-settings-backup', JSON.stringify(b)); }
+function afterLoad() {
+  if (MODE === 'mock') { // sample mode on a connected phone: fetch your real shifts/rate once in the background
+    var c = connection(); if (!c || store('fsp-real-extras') || afterLoad.tried) return; afterLoad.tried = true;
+    fetch(c.api, { method: 'POST', body: JSON.stringify({ key: c.key, fn: 'getDashboard', args: [] }), redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j.ok) return; var st = j.result.settings || {};
+      store('fsp-real-extras', JSON.stringify({ shifts: j.result.shifts || null, hourlyRate: st.hourlyRate || null, taxRate: st.taxRate || null })); load(true); }).catch(function () {});
+    return;
+  }
+  var b = {}; try { b = JSON.parse(store('fsp-settings-backup') || '{}'); } catch (e) {}
+  var st = D.settings || {}, fix = {};
+  SET_KEYS.forEach(function (k) { if (b[k] != null && st[k] == null) fix[k] = b[k]; else if (st[k] != null && !(k in b)) b[k] = st[k]; });
+  store('fsp-settings-backup', JSON.stringify(b));
+  // Sample data borrows only your shifts, rate and tax.
+  store('fsp-real-extras', JSON.stringify({ shifts: D.shifts || null, hourlyRate: st.hourlyRate || b.hourlyRate || null, taxRate: st.taxRate || b.taxRate || null }));
+  if (Object.keys(fix).length) { D.settings = Object.assign({}, st, fix); act('setSettings', [fix], null, function (d) { d.settings = Object.assign(d.settings || {}, fix); }); }
+}
 function dropQ(id) { return function (d) { d.assistant.questions = d.assistant.questions.filter(function (x) { return x.id !== id; }); }; }
 
 function setupScreen() {
@@ -1204,7 +1231,7 @@ function mondaysIn(fromExcl, toIncl) { var n = 0, d = addDaysStr(fromExcl, 1); w
 function investedInMonth(mi) { var y = D.today.slice(0, 4), first = y + '-' + ('0' + (mi + 1)).slice(-2) + '-01', last = iso10(new Date(Date.UTC(+y, mi + 1, 0)));
   if (first > D.today) return 0; return mondaysIn(addDaysStr(first, -1), last < D.today ? last : D.today) * autoInvest(); }
 function iso10(d) { return d.toISOString().slice(0, 10); }
-function isShiftSource(src) { return /goldfish/i.test(src); }
+function isShiftSource(src) { return D.shiftSource ? src === D.shiftSource : /goldfish/i.test(src); }
 function calcProjection() {
   var y = +D.today.slice(0, 4), today = D.today, end = y + '-12-31', cur = currentMonthIdx();
   var daysLeft = (Date.parse(end) - Date.parse(today)) / 864e5;
@@ -1429,6 +1456,7 @@ function hrs(h) { h = Math.round(h * 10) / 10; return h + ' hr' + (h === 1 ? '' 
 function taxRate() { return D.settings && D.settings.taxRate || 0; }
 // Take-home: hours × rate, minus the share withheld for taxes.
 function estPay(h, label) { var r = hourlyRate(); return r ? '≈ ' + money(h * r * (1 - taxRate() / 100), 0) + (label ? (taxRate() ? ' take-home' : ' before tax') : '') : ''; }
+function grossPay(h, label) { var r = hourlyRate(); return r ? '≈ ' + money(h * r, 0) + (label ? ' before tax' : '') : ''; } // Income page shows gross
 function payBasis() { return hourlyRate() ? money(hourlyRate()) + '/hr' + (taxRate() ? ' − ' + taxRate() + '% tax = take-home' : ' before tax') : ''; }
 function shiftDay(e) { var d = e.start.slice(0, 10); return d === D.today ? 'Today' : d === addDaysStr(D.today, 1) ? 'Tomorrow' : dlabel(d); }
 function shiftWhen(e) { return clock(e.start) + ' – ' + clock(e.end); }
@@ -1450,22 +1478,22 @@ function shiftRow(e, now) {
   var live = e.start <= now && e.end > now;
   return '<div class="row"><span>' + (live ? '<b style="color:var(--accent)">Now</b>' : shiftDay(e)) + ' · ' + esc(e.title) +
     '<br><span class="muted">' + shiftWhen(e) + (e.notes ? ' · ' + esc(e.notes) : '') + '</span></span>' +
-    '<span class="num" style="white-space:nowrap;text-align:right">' + hrs(e.hours) + (hourlyRate() ? '<br><span class="muted">' + estPay(e.hours) + '</span>' : '') + '</span></div>';
+    '<span class="num" style="white-space:nowrap;text-align:right">' + hrs(e.hours) + (hourlyRate() ? '<br><span class="muted">' + grossPay(e.hours) + '</span>' : '') + '</span></div>';
 }
 function shiftsSection() {
   var sd = D.shifts;
   if (!sd || !sd.connected) return MODE === 'mock' ? '' : '<button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(openShiftSettings) + '><div class="row"><div><div class="label" style="margin:0">Work shifts</div><div class="muted" style="margin-top:4px">Connect your Rippling schedule to see upcoming shifts and expected pay</div></div><div class="muted">›</div></div></button>';
   var st = shiftStats(), h = '<div class="section">Work shifts</div>';
   if (sd.error) h += '<div class="card"><div class="muted">Couldn’t load your shifts: ' + esc(sd.error) + '</div></div>';
-  h += '<div class="grid2"><div class="card"><div class="label">This week · ' + st.weekLabel + '</div><div class="big">' + hrs(st.hWeek) + '</div><div class="sub">' + hrs(st.hWeekDone) + ' worked · ' + st.week.length + ' shift' + (st.week.length === 1 ? '' : 's') + '</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + estPay(st.hWeek, true) + '</div>' : '') + '</div>' +
-    '<div class="card"><div class="label">' + D.monthly[currentMonthIdx()].name + '</div><div class="big">' + hrs(st.hMonth) + '</div><div class="sub">' + hrs(st.hMonthDone) + ' worked</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + estPay(st.hMonth, true) + '</div>' : '') + '</div></div>';
+  h += '<div class="grid2"><div class="card"><div class="label">This week · ' + st.weekLabel + '</div><div class="big">' + hrs(st.hWeek) + '</div><div class="sub">' + hrs(st.hWeekDone) + ' worked · ' + st.week.length + ' shift' + (st.week.length === 1 ? '' : 's') + '</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + grossPay(st.hWeek, true) + '</div>' : '') + '</div>' +
+    '<div class="card"><div class="label">' + D.monthly[currentMonthIdx()].name + '</div><div class="big">' + hrs(st.hMonth) + '</div><div class="sub">' + hrs(st.hMonthDone) + ' worked</div>' + (hourlyRate() ? '<div class="sub" style="margin-top:4px;color:var(--ink)">' + grossPay(st.hMonth, true) + '</div>' : '') + '</div></div>';
   h += '<div class="card"><div class="label">Upcoming</div>' + (st.up.length ? '<div class="list">' + st.up.slice(0, 8).map(function (e) { return shiftRow(e, st.now); }).join('') + '</div>' : '<div class="muted">No shifts scheduled yet</div>') +
     (function () { var hg = hoursToGoal(); if (!hg) return '';
       return hg.gap > 0 ? '<div class="sub" style="margin-top:10px;color:var(--ink)">About <b>' + Math.ceil(hg.hours) + ' extra hours</b> (≈ ' + Math.ceil(hg.shifts) + ' shifts) beyond your projection would get you to ' + money(goals().goal, 0) + '</div>'
         : '<div class="sub" style="margin-top:10px;color:var(--ink)">On track to pass ' + money(goals().goal, 0) + ' with about ' + Math.floor(-hg.hours) + ' hours to spare</div>'; })() +
-    '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + estPay(st.hRecent, true) : '') + '</div>' +
+    '<div class="muted" style="margin-top:10px">Last 30 days: ' + st.recent.length + ' shift' + (st.recent.length === 1 ? '' : 's') + ', ' + hrs(st.hRecent) + (hourlyRate() ? ' · ' + grossPay(st.hRecent, true) : '') + '</div>' +
     (hourlyRate() ? '' : '<button class="btn block" style="margin-top:10px" ' + on(openShiftSettings) + '>Add your hourly rate to see pay</button>') +
-    (hourlyRate() ? '<div class="muted" style="margin-top:8px">Pay shown: ' + payBasis() + '</div>' : '') +
+    (hourlyRate() ? '<div class="muted" style="margin-top:8px">Pay shown before tax at ' + money(hourlyRate()) + '/hr' + (taxRate() ? '. Take-home is about ' + (100 - taxRate()) + '% of it.' : '') + '</div>' : '') +
     '<div class="muted" style="margin-top:8px;cursor:pointer" ' + on(openShiftSettings) + '>From Rippling' + (sd.fetched ? ' · checked ' + esc(sd.fetched) : '') + ' · Shift settings ›</div></div>';
   return h;
 }
