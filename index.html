@@ -49,6 +49,10 @@
   input, textarea { -webkit-user-select:text; user-select:text; }
   input, select, textarea, input.btn { font-size:16px; } /* under 16px makes iPhone zoom in */
   /* Fixed top bar that sits under the iPhone status bar, like a native app. */
+  #lock { position:fixed; inset:0; z-index:50; background:var(--head); color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; text-align:center; }
+  #lock[hidden] { display:none; }
+  #lock button { background:#fff; color:var(--head); border:0; border-radius:14px; padding:14px 22px; font:inherit; font-weight:650; font-size:17px; }
+  #lock .lk { font-size:15px; opacity:.85; max-width:280px; }
   #top { position:fixed; top:0; left:0; right:0; z-index:6; background:var(--head); color:#fff; padding:env(safe-area-inset-top) 16px 0; }
   #top header { max-width:520px; margin:0 auto; height:56px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
   #top h1 { font-size:26px; letter-spacing:-.02em; margin:0; color:#fff; }
@@ -153,6 +157,10 @@
 </style>
 </head>
 <body>
+<div id="lock" hidden><svg viewBox="0 0 24 24" width="54" height="54" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9.5 16c1.5 1 3.5 1 5 0"/></svg>
+  <div style="font-size:22px;font-weight:700">FSP is locked</div><div class="lk" id="lockMsg">Use Face ID to open your finances.</div>
+  <button onclick="unlock()">Unlock with Face ID</button></div>
+<script>try { if (localStorage.getItem('fsp-faceid') && !(window.google && google.script)) document.getElementById('lock').hidden = false; } catch (e) {}</script>
 <div id="top"><header><h1>FSP</h1></header></div>
 <div id="scroller"><div class="wrap" id="app"><div class="loading">Loading your spreadsheet…</div></div></div>
 <nav><div class="in" id="nav"></div></nav>
@@ -1607,6 +1615,41 @@ function openRecap(mi) {
   openSheet(h);
 }
 
+// ---------- Face ID lock (a passkey on this phone; iPhone asks for Face ID to use it) ----------
+var LOCK_KEY = 'fsp-faceid', AWAY_MS = 60 * 1000, hiddenAt = 0;
+function faceIdSupported() { return MODE !== 'google' && !!(window.PublicKeyCredential && navigator.credentials); }
+function b64u(buf) { return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function unb64u(t) { t = t.replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; var b = atob(t), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+function rnd(n) { return crypto.getRandomValues(new Uint8Array(n)); }
+function lockNow() { if (!store(LOCK_KEY) || !faceIdSupported()) return; document.getElementById('lock').hidden = false; document.getElementById('lockMsg').textContent = 'Use Face ID to open your finances.'; }
+var unlocking = false;
+function unlock() {
+  var id = store(LOCK_KEY), l = document.getElementById('lock');
+  if (!id || !faceIdSupported()) { l.hidden = true; return; }
+  if (unlocking) return; unlocking = true;
+  navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64u(id) }], userVerification: 'required', timeout: 60000 } })
+    .then(function () { l.hidden = true; maybeCheckin(); })
+    .catch(function () { document.getElementById('lockMsg').textContent = 'Not unlocked. Tap the button to try again.'; })
+    .then(function () { unlocking = false; });
+}
+function enableFaceId(box) {
+  var fail = function (msg) { box.checked = false; toast(msg, 4000); };
+  if (!faceIdSupported()) return fail('Face ID isn’t available here');
+  PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(function (ok) {
+    if (!ok) return fail('Turn on Face ID for this iPhone first (Settings → Face ID & Passcode)');
+    return navigator.credentials.create({ publicKey: {
+      rp: { name: 'FSP' }, user: { id: rnd(16), name: 'FSP app lock', displayName: 'FSP app lock' }, challenge: rnd(32),
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' }, timeout: 60000 } })
+      .then(function (cred) { store(LOCK_KEY, b64u(cred.rawId)); toast('Face ID is on'); });
+  }).catch(function () { fail('Face ID wasn’t turned on'); });
+}
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (store(LOCK_KEY) && hiddenAt && Date.now() - hiddenAt > AWAY_MS) { lockNow(); unlock(); }
+});
+if (store(LOCK_KEY) && faceIdSupported()) setTimeout(unlock, 300); // iPhone may need the button tap instead
+
 // ---------- settings ----------
 function setData(v) { store('fsp-data', v); location.reload(); }
 function openSettings() {
@@ -1615,6 +1658,7 @@ function openSettings() {
     '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
     '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
   h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
+  if (faceIdSupported()) h += '<label class="chk"><input type="checkbox"' + (store(LOCK_KEY) ? ' checked' : '') + ' onchange="if (this.checked) enableFaceId(this); else { store(LOCK_KEY, null); toast(\'Face ID is off\'); }"> Require Face ID to open FSP</label>';
   h += '<div class="field"><span>Auto-invest every Monday</span><div style="display:flex;gap:8px"><input class="input money" id="aiAmt" inputmode="decimal" value="' + autoInvest() + '"><button class="btn" style="margin:0" ' + on(function () {
     var v = parseFloat(String(document.getElementById('aiAmt').value).replace(/[$,\s]/g, '')); if (!(v >= 0)) return toast('Enter an amount');
     act('setSettings', [{ autoInvest: v }], function () { toast('Saved'); }, function (d) { d.settings = d.settings || {}; d.settings.autoInvest = v; }); }) + '>Save</button></div></div>';
