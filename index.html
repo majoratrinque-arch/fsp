@@ -159,7 +159,8 @@
 <body>
 <div id="lock" hidden><svg viewBox="0 0 24 24" width="54" height="54" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9.5 16c1.5 1 3.5 1 5 0"/></svg>
   <div style="font-size:22px;font-weight:700">FSP is locked</div><div class="lk" id="lockMsg">Use Face ID to open your finances.</div>
-  <button onclick="unlock()">Unlock with Face ID</button></div>
+  <button onclick="unlock()">Unlock with Face ID</button>
+  <a href="#" id="lockReset" hidden onclick="event.preventDefault();resetLock()" style="color:#fff;opacity:.8;font-size:14px">Face ID keeps failing? Set it up again</a></div>
 <script>try { if (localStorage.getItem('fsp-faceid') && !(window.google && google.script)) document.getElementById('lock').hidden = false; } catch (e) {}</script>
 <div id="top"><header><h1>FSP</h1></header></div>
 <div id="scroller"><div class="wrap" id="app"><div class="loading">Loading your spreadsheet…</div></div></div>
@@ -1621,34 +1622,44 @@ function faceIdSupported() { return MODE !== 'google' && !!(window.PublicKeyCred
 function b64u(buf) { return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function unb64u(t) { t = t.replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; var b = atob(t), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
 function rnd(n) { return crypto.getRandomValues(new Uint8Array(n)); }
-function lockNow() { if (!store(LOCK_KEY) || !faceIdSupported()) return; document.getElementById('lock').hidden = false; document.getElementById('lockMsg').textContent = 'Use Face ID to open your finances.'; }
-var unlocking = false;
-function unlock() {
-  var id = store(LOCK_KEY), l = document.getElementById('lock');
+function lockNow() { if (!store(LOCK_KEY) || !faceIdSupported()) return; document.getElementById('lock').hidden = false; document.getElementById('lockMsg').textContent = 'Use Face ID to open your finances.'; document.getElementById('lockReset').hidden = true; }
+// iPhone only shows Face ID while it's handling your tap, so these call it right away (no waiting on anything first).
+var pending = null;
+function createKey() {
+  return navigator.credentials.create({ publicKey: {
+    rp: { name: 'FSP' }, user: { id: rnd(16), name: 'FSP app lock', displayName: 'FSP app lock' }, challenge: rnd(32),
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' }, timeout: 60000 } })
+    .then(function (cred) { store(LOCK_KEY, b64u(cred.rawId)); return cred; });
+}
+function unlock(auto) {
+  var id = store(LOCK_KEY), l = document.getElementById('lock'), msg = document.getElementById('lockMsg');
   if (!id || !faceIdSupported()) { l.hidden = true; return; }
-  if (unlocking) return; unlocking = true;
-  navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64u(id) }], userVerification: 'required', timeout: 60000 } })
-    .then(function () { l.hidden = true; maybeCheckin(); })
-    .catch(function () { document.getElementById('lockMsg').textContent = 'Not unlocked. Tap the button to try again.'; })
-    .then(function () { unlocking = false; });
+  if (pending) { try { pending.abort(); } catch (e) {} } // a tap always starts a fresh Face ID check
+  var ctl = window.AbortController ? new AbortController() : null; pending = ctl;
+  var opts = { publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64u(id), transports: ['internal', 'hybrid'] }], userVerification: 'required', timeout: 60000 } };
+  if (ctl) opts.signal = ctl.signal;
+  navigator.credentials.get(opts)
+    .then(function () { if (pending !== ctl) return; pending = null; l.hidden = true; maybeCheckin(); })
+    .catch(function (e) { if (pending !== ctl) return; pending = null;
+      if (!auto) { msg.textContent = 'Not unlocked (' + (e && e.name || 'error') + '). Tap to try again.'; document.getElementById('lockReset').hidden = false; } });
+}
+// If the saved Face ID key is gone (e.g. removed from Passwords), set up a new one. That still needs your Face ID or passcode.
+function resetLock() {
+  var msg = document.getElementById('lockMsg');
+  createKey().then(function () { document.getElementById('lock').hidden = true; toast('Face ID is set up again'); maybeCheckin(); })
+    .catch(function (e) { msg.textContent = 'Couldn’t set up Face ID (' + (e && e.name || 'error') + ').'; });
 }
 function enableFaceId(box) {
-  var fail = function (msg) { box.checked = false; toast(msg, 4000); };
-  if (!faceIdSupported()) return fail('Face ID isn’t available here');
-  PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(function (ok) {
-    if (!ok) return fail('Turn on Face ID for this iPhone first (Settings → Face ID & Passcode)');
-    return navigator.credentials.create({ publicKey: {
-      rp: { name: 'FSP' }, user: { id: rnd(16), name: 'FSP app lock', displayName: 'FSP app lock' }, challenge: rnd(32),
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' }, timeout: 60000 } })
-      .then(function (cred) { store(LOCK_KEY, b64u(cred.rawId)); toast('Face ID is on'); });
-  }).catch(function () { fail('Face ID wasn’t turned on'); });
+  if (!faceIdSupported()) { box.checked = false; return toast('Face ID isn’t available here. Open FSP from your Home Screen icon.', 5000); }
+  createKey().then(function () { toast('Face ID is on. It will ask next time you open FSP.', 3500); })
+    .catch(function (e) { box.checked = false; toast('Face ID wasn’t turned on (' + (e && e.name || 'error') + ')', 5000); });
 }
 document.addEventListener('visibilitychange', function () {
   if (document.hidden) { hiddenAt = Date.now(); return; }
-  if (store(LOCK_KEY) && hiddenAt && Date.now() - hiddenAt > AWAY_MS) { lockNow(); unlock(); }
+  if (store(LOCK_KEY) && hiddenAt && Date.now() - hiddenAt > AWAY_MS) { lockNow(); unlock(true); }
 });
-if (store(LOCK_KEY) && faceIdSupported()) setTimeout(unlock, 300); // iPhone may need the button tap instead
+if (store(LOCK_KEY) && faceIdSupported()) unlock(true); // iPhone may need the button tap instead
 
 // ---------- settings ----------
 function setData(v) { store('fsp-data', v); location.reload(); }
