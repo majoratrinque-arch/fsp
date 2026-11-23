@@ -161,7 +161,7 @@
   <div style="font-size:22px;font-weight:700">FSP is locked</div><div class="lk" id="lockMsg">Use Face ID to open your finances.</div>
   <button onclick="unlock()">Unlock with Face ID</button>
   <a href="#" id="lockReset" hidden onclick="event.preventDefault();resetLock()" style="color:#fff;opacity:.8;font-size:14px">Face ID keeps failing? Set it up again</a></div>
-<script>try { if (localStorage.getItem('fsp-faceid') && !(window.google && google.script)) document.getElementById('lock').hidden = false; } catch (e) {}</script>
+<script>try { if (localStorage.getItem('fsp-faceid') && !window.FSP_NATIVE && !(window.google && google.script)) document.getElementById('lock').hidden = false; } catch (e) {}</script>
 <div id="top"><header><h1>FSP</h1></header></div>
 <div id="scroller"><div class="wrap" id="app"><div class="loading">Loading your spreadsheet…</div></div></div>
 <nav><div class="in" id="nav"></div></nav>
@@ -1617,8 +1617,10 @@ function openRecap(mi) {
 }
 
 // ---------- Face ID lock (a passkey on this phone; iPhone asks for Face ID to use it) ----------
+var APP_BUILD = '11-23b';
 var LOCK_KEY = 'fsp-faceid', AWAY_MS = 60 * 1000, hiddenAt = 0;
-function faceIdSupported() { return MODE !== 'google' && !!(window.PublicKeyCredential && navigator.credentials); }
+// Inside the FSP iPhone app, the app itself does Face ID, so the passkey lock is off.
+function faceIdSupported() { return !window.FSP_NATIVE && MODE !== 'google' && !!(window.PublicKeyCredential && navigator.credentials); }
 function b64u(buf) { return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function unb64u(t) { t = t.replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; var b = atob(t), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
 function rnd(n) { return crypto.getRandomValues(new Uint8Array(n)); }
@@ -1642,18 +1644,25 @@ function unlock(auto) {
   navigator.credentials.get(opts)
     .then(function () { if (pending !== ctl) return; pending = null; l.hidden = true; maybeCheckin(); })
     .catch(function (e) { if (pending !== ctl) return; pending = null;
-      if (!auto) { msg.textContent = 'Not unlocked (' + (e && e.name || 'error') + '). Tap to try again.'; document.getElementById('lockReset').hidden = false; } });
+      if (!auto) { msg.textContent = 'Not unlocked (' + faceIdErr(e) + '). Tap to try again.'; document.getElementById('lockReset').hidden = false; } });
 }
 // If the saved Face ID key is gone (e.g. removed from Passwords), set up a new one. That still needs your Face ID or passcode.
 function resetLock() {
   var msg = document.getElementById('lockMsg');
   createKey().then(function () { document.getElementById('lock').hidden = true; toast('Face ID is set up again'); maybeCheckin(); })
-    .catch(function (e) { msg.textContent = 'Couldn’t set up Face ID (' + (e && e.name || 'error') + ').'; });
+    .catch(function (e) { msg.textContent = 'Couldn’t set up Face ID (' + faceIdErr(e) + ').'; });
 }
-function enableFaceId(box) {
-  if (!faceIdSupported()) { box.checked = false; return toast('Face ID isn’t available here. Open FSP from your Home Screen icon.', 5000); }
-  createKey().then(function () { toast('Face ID is on. It will ask next time you open FSP.', 3500); })
-    .catch(function (e) { box.checked = false; toast('Face ID wasn’t turned on (' + (e && e.name || 'error') + ')', 5000); });
+function faceIdInfo() {
+  var standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  var why = MODE === 'google' ? 'not available inside Google’s page' : !window.PublicKeyCredential ? 'this browser has no passkey support' : !window.isSecureContext ? 'needs a secure (https) address' : '';
+  var last = store('fsp-faceid-err');
+  return 'App ' + APP_BUILD + ' · ' + (standalone ? 'Home Screen app' : 'browser tab') + (why ? ' · ' + why : '') + (last ? ' · last error: ' + esc(last) : '');
+}
+function faceIdErr(e) { var t = (e && e.name || 'Error') + (e && e.message ? ': ' + String(e.message).slice(0, 120) : ''); store('fsp-faceid-err', t); return t; }
+function enableFaceId() {
+  if (!faceIdSupported()) return toast('Face ID isn’t available here. Open FSP from your Home Screen icon.', 5000);
+  createKey().then(function () { store('fsp-faceid-err', null); toast('Face ID is on. It will ask next time you open FSP.', 3500); openSettings(); })
+    .catch(function (e) { var t = faceIdErr(e); toast('Face ID wasn’t turned on: ' + t, 7000); var i = document.getElementById('fidInfo'); if (i) i.innerHTML = faceIdInfo(); });
 }
 document.addEventListener('visibilitychange', function () {
   if (document.hidden) { hiddenAt = Date.now(); return; }
@@ -1669,7 +1678,11 @@ function openSettings() {
     '<button style="flex:1" class="' + (MODE === 'mock' ? 'on' : '') + '" ' + on(function () { if (MODE !== 'mock') setData('sample'); }) + '>Sample data</button></div>' +
     '<div class="muted" style="margin-top:6px">Sample data is made up, for trying things out. Nothing you do in it touches your sheet.</div></div>';
   h += '<div class="field"><span>Income goal</span><button class="btn block" style="text-align:left;margin:0" ' + on(openGoal) + '>' + money(g.goal, 0) + (g.custom ? ' · your goal' : ' · from your sheet') + ' ›</button></div>';
-  if (faceIdSupported()) h += '<label class="chk"><input type="checkbox"' + (store(LOCK_KEY) ? ' checked' : '') + ' onchange="if (this.checked) enableFaceId(this); else { store(LOCK_KEY, null); toast(\'Face ID is off\'); }"> Require Face ID to open FSP</label>';
+  if (window.FSP_NATIVE) h += '<div class="field"><span>Face ID lock</span><div class="muted">On. The FSP app asks for Face ID when it opens and after a minute away.</div></div>';
+  else h += '<div class="field"><span>Face ID lock</span>' + (store(LOCK_KEY)
+      ? '<div class="muted" style="margin-bottom:6px">On: FSP asks for Face ID when it opens.</div><button class="btn block" style="margin:0" onclick="store(LOCK_KEY, null); toast(\'Face ID is off\'); openSettings()">Turn off Face ID</button>'
+      : '<button class="btn primary block" style="margin:0" onclick="enableFaceId()">Turn on Face ID</button>') +
+    '<div class="muted" style="margin-top:6px" id="fidInfo">' + faceIdInfo() + '</div></div>';
   h += '<div class="field"><span>Auto-invest every Monday</span><div style="display:flex;gap:8px"><input class="input money" id="aiAmt" inputmode="decimal" value="' + autoInvest() + '"><button class="btn" style="margin:0" ' + on(function () {
     var v = parseFloat(String(document.getElementById('aiAmt').value).replace(/[$,\s]/g, '')); if (!(v >= 0)) return toast('Enter an amount');
     act('setSettings', [{ autoInvest: v }], function () { toast('Saved'); }, function (d) { d.settings = d.settings || {}; d.settings.autoInvest = v; }); }) + '>Save</button></div></div>';
