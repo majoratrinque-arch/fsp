@@ -878,6 +878,12 @@ var CONN = 'fsp-connection-v1', CACHE, NEED_API = 5;
 ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) { document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false }); });
 document.addEventListener('touchmove', function (e) { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
+// The FSP iPhone app calls this with the text of a scanned QR code.
+window.fspScanned = function (text) {
+  var m = String(text || '').match(/api=([^&]+)&key=([0-9a-f]+)/i);
+  if (!m) return toast('That QR code isn\'t an FSP link');
+  store(CONN, JSON.stringify({ api: decodeURIComponent(m[1]), key: m[2] })); toast('Connected'); load(true);
+};
 function readLinkFromHash() {
   var m = location.hash.match(/api=([^&]+)&key=([0-9a-f]+)/i);
   if (m) store(CONN, JSON.stringify({ api: decodeURIComponent(m[1]), key: m[2] }));
@@ -989,7 +995,10 @@ function setupScreen() {
   resetHandlers();
   document.getElementById('top').innerHTML = '<header><h1>Connect</h1></header>';
   var h = '<div class="card"><div style="font-weight:650;font-size:17px;margin-bottom:6px">Link this app to your sheet</div>' +
-    '<div class="sub">On a computer, open your FSP Google Sheet and choose <b>FSP Assistant → Connect my iPhone app</b>. Scan the QR code with your iPhone camera and open it in Safari, then tap <b>Share → Add to Home Screen</b>.</div>' +
+    (window.FSP_NATIVE
+      ? '<div class="sub">On a computer, open your FSP Google Sheet, choose <b>FSP Assistant → Connect my iPhone app</b> and click <b>Make QR code</b>. Then scan it here.</div>' +
+        '<button class="btn primary block" style="margin-top:12px" onclick="window.webkit.messageHandlers.fsp.postMessage(\'scanQR\')">Scan QR code</button>'
+      : '<div class="sub">On a computer, open your FSP Google Sheet and choose <b>FSP Assistant → Connect my iPhone app</b>. Scan the QR code with your iPhone camera and open it in Safari, then tap <b>Share → Add to Home Screen</b>.</div>') +
     '<label class="field"><span>Or paste the link here</span><input class="input" id="paste" placeholder="https://…#api=…&key=…" autocapitalize="off" autocorrect="off"></label>' +
     '<button class="btn primary block" ' + on(function () {
       var v = document.getElementById('paste').value, m = v.match(/api=([^&]+)&key=([0-9a-f]+)/i);
