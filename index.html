@@ -1943,11 +1943,13 @@ function fireDraw() {
       (open ? '<div class="muted" style="margin-top:6px">' + t.what + '</div>' : '') + '</div>';
   }).join('');
   // Chart: your balance by age vs the FIRE lines
-  var n = 41, labels = [], series = [{ name: 'You', color: 'var(--ink)', values: c.bal.slice(0, n), fill: false }];
+  // Show a few years past the last line you cross (Fat FIRE), so every crossing is visible.
+  var last = Math.max.apply(null, ['lean', 'fire', 'fat'].map(function (k) { var y = c.out[k].yrs; return y == null ? 60 : y; }));
+  var n = Math.min(61, Math.max(21, Math.ceil(last) + 4)), labels = [], series = [{ name: 'You', color: 'var(--ink)', values: c.bal.slice(0, n), fill: false }];
   for (var i = 0; i < n; i++) labels.push(String(f.age + i));
   [['lean', 'var(--s3)'], ['fire', 'var(--s1)'], ['fat', 'var(--s4)']].forEach(function (x) {
     series.push({ name: FIRE_TYPES.filter(function (t) { return t.k === x[0]; })[0].name, color: x[1], values: labels.map(function () { return c.out[x[0]].target; }), dash: true }); });
-  lineChart('fireChart', labels, series, { zero: true, height: 180, labelEvery: 5, tipLabels: labels.map(function (a) { return 'Age ' + a; }) });
+  lineChart('fireChart', labels, series, { zero: true, height: 180, labelEvery: n > 46 ? 10 : 5, tipLabels: labels.map(function (a) { return 'Age ' + a; }) });
   document.getElementById('fireKey').innerHTML = legend([['Your investments', 'var(--ink)'], ['Lean', 'var(--s3)'], ['FIRE', 'var(--s1)'], ['Fat', 'var(--s4)']]);
 }
 
