@@ -1842,8 +1842,115 @@ function screenNetWorth() {
     '<div class="label" style="margin-top:16px">Milestones</div><div class="list" id="milestones"></div>' +
     '<div class="muted" style="margin-top:8px">Investments grow at the yearly return; cash doesn’t grow. ' +
     (nwMode === 'est' && nwEstimate() ? 'Starts from today’s estimate.' : 'Starts from your ' + monthEndLabel(st.i) + ' entry — at 7% with $0 added it matches the Future Networth row in your sheet.') + '</div></div>';
+  h += fireSummary();
   return h;
 }
+// ---------- FIRE (Financial Independence, Retire Early) ----------
+// All amounts are in today's dollars: the return is "real" (after inflation), so a $40k/yr life costs $40k in any year.
+var FIRE_DEF = { age: 20, retireAge: 65, spend: 40000, wr: 4, ret: 7, monthly: null, barista: 20000, countCash: false };
+function fireIn() { var f = {}; try { f = JSON.parse(store('fsp-fire') || '{}') || {}; } catch (e) {}
+  var o = {}; Object.keys(FIRE_DEF).forEach(function (k) { o[k] = f[k] != null ? f[k] : FIRE_DEF[k]; });
+  if (o.monthly == null) o.monthly = Math.round(autoInvest() * 52 / 12 / 25) * 25; return o; }
+function fireSave(f) { store('fsp-fire', JSON.stringify(f)); }
+var FIRE_TYPES = [
+  { k: 'lean', name: 'Lean FIRE', mult: 0.7, color: 'var(--s3)',
+    what: 'Retire on a tight, bare-bones budget: rent, food, basics, not much extra. Here that’s 70% of your spending. The smallest number, so the soonest finish line, but little room for surprises.' },
+  { k: 'fire', name: 'FIRE', mult: 1, color: 'var(--s1)',
+    what: 'Classic FIRE: enough invested that withdrawing your withdrawal rate each year (usually 4%) covers your normal spending forever. That works out to your yearly spending × 25 at 4%.' },
+  { k: 'fat', name: 'Fat FIRE', mult: 2, color: 'var(--s4)',
+    what: 'Retire comfortably with plenty of room for travel, a nicer home and splurges. Here that’s double your spending. Takes the longest, but you never have to watch the budget.' },
+  { k: 'barista', name: 'Barista FIRE', color: 'var(--s2)',
+    what: 'Leave full-time work but keep a fun or part-time job (like coaching or swim lessons) that covers part of your costs, often for the health insurance too. Your investments only have to cover the rest, so the number is much smaller.' },
+  { k: 'coast', name: 'Coast FIRE', color: 'var(--accent)',
+    what: 'You’ve invested enough that, without adding another dollar, compound growth alone gets you to full FIRE by your normal retirement age. After that you only need to earn enough to pay today’s bills. Starting young makes this one powerful.' }
+];
+function fireCalc(f) {
+  var st = nwStats(), e = nwMode === 'est' ? nwEstimate() : null;
+  var start = st ? (e ? e.inv : st.inv) + (f.countCash ? (e ? e.cash : st.cash) : 0) : 0;
+  var r = f.ret / 100, rm = Math.pow(1 + r, 1 / 12) - 1, mult = 100 / f.wr;
+  var fireNum = f.spend * mult, yrsToRetire = Math.max(0, f.retireAge - f.age);
+  var targets = { lean: f.spend * 0.7 * mult, fire: fireNum, fat: f.spend * 2 * mult, barista: Math.max(0, f.spend - f.barista) * mult };
+  // Year-by-year balance if you keep investing `monthly`.
+  var bal = [start], b = start;
+  for (var y = 1; y <= 60; y++) { for (var m = 0; m < 12; m++) b = b * (1 + rm) + f.monthly; bal.push(b); }
+  function when(t) { if (start >= t) return 0; b = start; for (var mo = 1; mo <= 720; mo++) { b = b * (1 + rm) + f.monthly; if (b >= t) return mo / 12; } return null; }
+  var out = {};
+  Object.keys(targets).forEach(function (k) { out[k] = { target: targets[k], yrs: when(targets[k]) }; });
+  // Coast: the amount needed now that grows to full FIRE by retirement age with nothing added.
+  var coastNow = fireNum / Math.pow(1 + r, yrsToRetire), coastYrs = null;
+  if (start >= coastNow) coastYrs = 0; else { b = start; for (var mo = 1; mo <= 720; mo++) { b = b * (1 + rm) + f.monthly;
+    var left = yrsToRetire - mo / 12; if (left <= 0) break; if (b >= fireNum / Math.pow(1 + r, left)) { coastYrs = mo / 12; break; } } }
+  out.coast = { target: coastNow, yrs: coastYrs };
+  return { start: start, out: out, bal: bal, fireNum: fireNum, mult: mult };
+}
+function fireAgeText(f, yrs) { if (yrs == null) return 'not within 60 years at this pace'; if (yrs === 0) return '<b class="up">you’re already there</b>';
+  return 'at age <b>' + Math.floor(f.age + yrs) + '</b> (' + (yrs < 1 ? Math.max(1, Math.round(yrs * 12)) + ' months' : Math.round(yrs * 10) / 10 + ' years') + ')'; }
+function fireSummary() {
+  var f = fireIn(), c = fireCalc(f), co = c.out.coast, fi = c.out.fire;
+  return '<div class="section">FIRE</div><button class="card" style="display:block;width:100%;text-align:left;cursor:pointer" ' + on(openFire) + '>' +
+    '<div class="row"><div class="label" style="margin:0">Financial independence</div><div class="muted">Calculator ›</div></div>' +
+    '<div class="big" style="margin-top:6px">' + money(c.fireNum, 0) + '</div><div class="sub">Your FIRE number · ' + pct(Math.min(1, c.start / c.fireNum), 1) + ' there</div>' +
+    '<div class="bar" style="margin-top:8px"><div style="width:' + Math.min(100, c.start / c.fireNum * 100) + '%;background:var(--s1)"></div></div>' +
+    '<div class="muted" style="margin-top:8px">Coast FIRE ' + fireAgeText(f, co.yrs) + ' · Full FIRE ' + fireAgeText(f, fi.yrs) + '</div>' +
+    '<div class="muted" style="margin-top:4px">Lean, Fat, Barista and Coast FIRE explained inside.</div></button>';
+}
+var fireOpen = {};
+function openFire() {
+  var f = fireIn();
+  function slider(key, label, min, max, step, fmt) {
+    return '<label class="field"><span>' + label + ' · <b id="fv-' + key + '">' + fmt(f[key]) + '</b></span><input type="range" min="' + min + '" max="' + max + '" step="' + step + '" value="' + f[key] + '" oninput="fireSet(\'' + key + '\', +this.value)"></label>';
+  }
+  var yrs = function (v) { return v; }, usd = function (v) { return money(v, 0); }, pc = function (v) { return v + '%'; };
+  var h = '<h2>FIRE calculator</h2><div class="muted">FIRE means <b>Financial Independence, Retire Early</b>: having enough invested that your investments pay for your life, so work becomes optional.</div>' +
+    '<div class="card" style="margin-top:12px"><div class="label">Where you are</div><div id="fireTop"></div><div class="chart" id="fireChart"></div><div id="fireKey"></div></div>' +
+    '<div id="fireCards"></div>' +
+    '<div class="section">Your numbers</div><div class="card">' +
+    slider('age', 'Your age', 14, 70, 1, yrs) +
+    slider('spend', 'Yearly spending in retirement', 10000, 200000, 1000, usd) +
+    slider('monthly', 'Invest each month', 0, 3000, 25, usd) +
+    '<div class="muted">' + money(autoInvest(), 0) + ' every Monday ≈ ' + money(Math.round(autoInvest() * 52 / 12 / 25) * 25, 0) + '/mo</div>' +
+    slider('ret', 'Yearly return after inflation', 3, 10, 0.5, pc) +
+    slider('wr', 'Safe withdrawal rate', 3, 5, 0.25, pc) +
+    slider('retireAge', 'Normal retirement age (for Coast FIRE)', 50, 70, 1, yrs) +
+    slider('barista', 'Part-time income (for Barista FIRE)', 0, 80000, 1000, usd) +
+    '<label class="chk"><input type="checkbox"' + (f.countCash ? ' checked' : '') + ' onchange="fireSet(\'countCash\', this.checked)"> Count my cash too (usually only investments count)</label></div>' +
+    '<div class="section">The basics</div><div class="card list">' +
+    '<div class="item"><b>Your FIRE number</b><div class="muted" style="margin-top:4px">Yearly spending ÷ withdrawal rate. At 4% that’s spending × 25. Spend $40k a year and you need $1M invested.</div></div>' +
+    '<div class="item"><b>The 4% rule</b><div class="muted" style="margin-top:4px">A famous study (the Trinity study) found that taking out 4% in year one, then the same amount adjusted for inflation each year, lasted 30+ years in almost every past market. Retiring very early? Many people use 3.25–3.5% to be safer.</div></div>' +
+    '<div class="item"><b>Today’s dollars</b><div class="muted" style="margin-top:4px">Everything here ignores inflation on purpose: the return is after inflation (about 7% for stocks long-term), so $40k means what $40k buys today.</div></div>' +
+    '<div class="item"><b>What counts</b><div class="muted" style="margin-top:4px">Your investments (from the Net Worth tab' + (nwMode === 'est' ? ', using today’s estimate' : '') + '). Cash is usually left out because it doesn’t grow.</div></div>' +
+    '<div class="item"><b>Not advice</b><div class="muted" style="margin-top:4px">These are estimates for planning and motivation. Real returns go up and down.</div></div></div>';
+  openSheet(h); fireDraw();
+}
+function fireSet(k, v) { var f = fireIn(); f[k] = v; fireSave(f); fireDraw(); }
+function fireDraw() {
+  var f = fireIn(), c = fireCalc(f), el = document.getElementById('fireCards'); if (!el) return;
+  ['age', 'retireAge'].forEach(function (k) { var x = document.getElementById('fv-' + k); if (x) x.textContent = f[k]; });
+  ['spend', 'monthly', 'barista'].forEach(function (k) { var x = document.getElementById('fv-' + k); if (x) x.textContent = money(f[k], 0); });
+  ['ret', 'wr'].forEach(function (k) { var x = document.getElementById('fv-' + k); if (x) x.textContent = f[k] + '%'; });
+  document.getElementById('fireTop').innerHTML = '<div class="big">' + money(c.start, 0) + '</div><div class="sub">invested now · adding ' + money(f.monthly, 0) + '/mo at ' + f.ret + '% after inflation</div>';
+  el.innerHTML = '<div class="section">The kinds of FIRE</div>' + FIRE_TYPES.map(function (t) {
+    var o = c.out[t.k], p = o.target ? Math.min(1, c.start / o.target) : 1;
+    var sub = t.k === 'coast' ? 'Needed invested today to coast to ' + money(c.fireNum, 0) + ' by ' + f.retireAge
+      : t.k === 'barista' ? '(' + money(f.spend, 0) + ' − ' + money(f.barista, 0) + ' part-time) × ' + (Math.round(c.mult * 10) / 10)
+      : money(f.spend * (t.mult || 1), 0) + '/yr × ' + (Math.round(c.mult * 10) / 10);
+    var open = fireOpen[t.k];
+    return '<div class="card"><div class="row" style="align-items:center"><span><i class="sw" style="background:' + t.color + '"></i><b>' + t.name + '</b></span><span class="num">' + money(o.target, 0) + '</span></div>' +
+      '<div class="muted" style="margin-top:2px">' + sub + '</div>' +
+      '<div class="bar" style="margin-top:8px"><div style="width:' + (p * 100) + '%;background:' + t.color + '"></div></div>' +
+      '<div class="sub" style="margin-top:6px">' + pct(p, 1) + ' there · reach it ' + fireAgeText(f, o.yrs) + '</div>' +
+      '<div class="muted" style="margin-top:8px;cursor:pointer;color:var(--accent);font-weight:600" onclick="fireOpen[\'' + t.k + '\']=!fireOpen[\'' + t.k + '\'];fireDraw()">' + (open ? 'Hide' : 'What is ' + t.name + '?') + '</div>' +
+      (open ? '<div class="muted" style="margin-top:6px">' + t.what + '</div>' : '') + '</div>';
+  }).join('');
+  // Chart: your balance by age vs the FIRE lines
+  var n = 41, labels = [], series = [{ name: 'You', color: 'var(--ink)', values: c.bal.slice(0, n), fill: false }];
+  for (var i = 0; i < n; i++) labels.push(String(f.age + i));
+  [['lean', 'var(--s3)'], ['fire', 'var(--s1)'], ['fat', 'var(--s4)']].forEach(function (x) {
+    series.push({ name: FIRE_TYPES.filter(function (t) { return t.k === x[0]; })[0].name, color: x[1], values: labels.map(function () { return c.out[x[0]].target; }), dash: true }); });
+  lineChart('fireChart', labels, series, { zero: true, height: 180, labelEvery: 5, tipLabels: labels.map(function (a) { return 'Age ' + a; }) });
+  document.getElementById('fireKey').innerHTML = legend([['Your investments', 'var(--ink)'], ['Lean', 'var(--s3)'], ['FIRE', 'var(--s1)'], ['Fat', 'var(--s4)']]);
+}
+
 function projSeries() {
   var st = nwStats(), e = nwMode === 'est' ? nwEstimate() : null, inv0 = e ? e.inv : st.inv, cash0 = e ? e.cash : st.cash;
   var y0 = +D.today.slice(0, 4), out = [], r = proj.rate / 100, mi = proj.addInv * 12;
